@@ -2,13 +2,17 @@
 
 Church stablecoin giving on NEAR. Hackathon build by Michael McClanahan (@tnvolman).
 
-> Everything here is a demo. Receipts and exports are labeled **demo, not a tax document**.
-> Testnet or a local sandbox only. Never put mainnet funds or real keys in this project.
+> **NEAR testnet only. $0 spend.** The cross-chain leg is a dry-run 1Click quote plus a simulated settlement on NEAR testnet. There are no mainnet accounts, no real funds, and no paid APIs, and no deposit is ever sent.
+> Receipts and exports are labeled **demo, not a tax document**. Never put mainnet funds or real keys in this project.
 
 ## What it is
 
-- **Giving.** A donor gives from another chain through [NEAR Intents 1Click](https://docs.near-intents.org). Each gift gets its own 1Click quote and its own deposit address, tagged with the donor and a fund (`general`, `missions`, or `building`). Deposit addresses are never reused, and incoming swaps are matched to gifts by deposit address only, never by amount.
-- **Settlement.** The swap delivers USDC to a NEAR treasury contract on an account the church owns.
+- **Giving (design).** A donor gives from another chain through [NEAR Intents 1Click](https://docs.near-intents.org). Each gift gets its own 1Click quote and its own deposit address, tagged with the donor and a fund (`general`, `missions`, or `building`). Deposit addresses are never reused, and gifts are matched by deposit address only, never by amount.
+- **Giving (this demo).** 1Click is mainnet-only, so the demo asks for **dry-run** quotes only (`dry: true`):
+  - A dry quote has no deposit address, so the API gives each gift a unique simulated address (`sim:<id>`) and still matches gifts by that address only.
+  - With `ONECLICK_API_KEY` unset, the API uses a local stub that returns responses shaped like dry-run quotes, so it never calls the paid live endpoint.
+  - No deposit is ever sent.
+- **Settlement (this demo).** The cross-chain transfer is simulated. `POST /api/gifts/:id/simulate-settlement` mints a test token (`tUSDC`, a minimal NEP-141 with 6 decimals) into the church's treasury contract on NEAR testnet, then marks the gift `settled`. In the full design, the 1Click swap would deliver real USDC instead.
 - **Payouts.** Rules live in the contract, not the agent. The contract enforces:
   - a vendor allowlist
   - a per-bill limit
@@ -22,9 +26,11 @@ Church stablecoin giving on NEAR. Hackathon build by Michael McClanahan (@tnvolm
 | Path | What |
 | --- | --- |
 | `contracts/treasury` | Rust `near-sdk` treasury contract (allowlist, limits, holds, timelock) |
-| `apps/api` | HTTP API on `127.0.0.1:8787`: 1Click quotes and status sync, payout requests, holds, summary, CSV export |
+| `contracts/test-ft` | Minimal NEP-141 `tUSDC` test token, testnet and unit tests only |
+| `apps/api` | HTTP API on `127.0.0.1:8787`: dry-run 1Click quotes, simulated settlement, payout requests, holds, summary, CSV export |
 | `apps/web` | Treasurer page (Vite + vanilla TypeScript) on `127.0.0.1:5173` |
-| `scripts/demo.sh` | Local demo runner and seeder |
+| `scripts/demo.sh` | Testnet demo runner |
+| `scripts/testnet/setup.mjs` | Creates testnet accounts through the faucet, generates keys into `.demo-keys/`, and deploys the contracts |
 | `INTERFACES.md` | The contract, API, and UI contract all parts build against |
 
 The contract, API, and UI are built in separate worktrees and merged at integration. Some of these directories may not exist yet on a given branch. See [Known issues](#known-issues).
@@ -35,7 +41,8 @@ Toolchain:
 
 - Node 22 (22.18 or newer; the web tests use Node's built-in TypeScript stripping)
 - Rust (stable) with the wasm target: `rustup target add wasm32-unknown-unknown`
-- `curl`, plus `bash` for the demo script
+- `curl`, `git`, and `bash` for the demo script
+- Internet access to `rpc.testnet.near.org` and the free testnet faucet
 
 Config:
 
@@ -43,9 +50,10 @@ Config:
 cp .env.example .env    # .env is gitignored. Fill it in locally.
 ```
 
-- Set `OPENLID_NETWORK=testnet`, or use a local sandbox. **No mainnet.** `scripts/demo.sh` refuses to run if the network is `mainnet`.
-- Never put keys in git. `OPENLID_AGENT_KEY_FILE` and the optional `OPENLID_OWNER_KEY_FILE` are paths to key files on your own machine, outside the repo. The agent key must be a function-call key limited to `request_payout` on the treasury contract. Do not commit a seed phrase, private key, or full-access key, and do not paste one into logs or fixtures. CI runs gitleaks.
-- `ONECLICK_API_KEY` goes only in your private `.env`.
+- `OPENLID_NETWORK=testnet`. **No mainnet.** `scripts/demo.sh` and `scripts/testnet/setup.mjs` refuse to run on any other network. `setup.mjs` also checks that the RPC reports `chain_id` `testnet`.
+- Leave `ONECLICK_API_KEY` empty. The $0 demo must not call the paid live 1Click API. `scripts/demo.sh` removes this variable from the API's environment even if it is set.
+- Never put keys in git. The demo generates testnet keys at run time into `.demo-keys/` (set by `OPENLID_DEMO_KEYS_DIR`; gitignored; directory mode 0700, files 0600). Key material is never printed. Logs show only account ids, file paths, and transaction links.
+- `OPENLID_AGENT_KEY_FILE` and `OPENLID_OWNER_KEY_FILE` are paths to key files, not keys. The agent key is a function-call key limited to `request_payout` on the treasury contract. Do not commit a seed phrase, private key, or full-access key, and do not paste one into logs or fixtures. CI runs gitleaks.
 
 ## Architecture
 
@@ -53,20 +61,26 @@ cp .env.example .env    # .env is gitignored. Fill it in locally.
 
 ```
 donor ──► POST /api/gifts/quote {donor, fund, originAsset, amount, refundTo, …}
-            │  API calls 1Click POST /v0/quote (dry:false, EXACT_INPUT,
-            │  ORIGIN_CHAIN deposit, recipient = church treasury contract)
+            │  dry-run quote: 1Click POST /v0/quote with dry:true (only if
+            │  ONECLICK_API_KEY is set), otherwise a local stub with the same
+            │  dry-run shape. Response has quoteMode: "dry_run".
             ▼
-          one gift persisted, keyed by quote.depositAddress (unique per gift)
+          one gift persisted, keyed by a unique deposit address:
+          quote.depositAddress if present, else simulated "sim:<id>"
             │
-donor sends funds on the origin chain to that deposit address
-            │
+            │  (demo) no deposit is sent on any chain
             ▼
-          POST /api/gifts/:id/sync  → 1Click GET /v0/status?depositAddress=…
-            │  PENDING_DEPOSIT                          → pending_deposit
-            │  KNOWN_DEPOSIT_TX / PROCESSING / INCOMPLETE_DEPOSIT → processing
-            │  SUCCESS → settled   REFUNDED → refunded   FAILED → failed
+          POST /api/gifts/:id/simulate-settlement   (testnet only)
+            │  mints tUSDC into the church's treasury contract on testnet
             ▼
-          settled = USDC landed in the church-owned treasury contract
+          settled = test FT credited to the church-owned treasury contract
+
+          Real 1Click status mapping (covered by mocked tests; the demo
+          does not use it for sim: addresses):
+          POST /api/gifts/:id/sync  → GET /v0/status?depositAddress=…
+            PENDING_DEPOSIT → pending_deposit
+            KNOWN_DEPOSIT_TX / PROCESSING / INCOMPLETE_DEPOSIT → processing
+            SUCCESS → settled   REFUNDED → refunded   FAILED → failed
 ```
 
 ### Payout request flow
@@ -74,7 +88,7 @@ donor sends funds on the origin chain to that deposit address
 1. The treasurer or a bookkeeping helper submits a bill to `POST /api/payouts/request` with `vendor`, `amount`, a unique `billId`, and `memo`.
 2. The API calls `request_payout` on the treasury contract, signing with the agent's restricted function-call key only.
 3. The contract checks the caller, the allowlist, that `bill_id` is unique, the per-bill limit, and the monthly cap.
-4. If the vendor is allowlisted, the amount is at or under the per-bill limit, and the cap has room, the contract sends USDC to the vendor. Status: `paid`.
+4. If the vendor is allowlisted, the amount is at or under the per-bill limit, and the cap has room, the contract transfers the token to the vendor. Status: `paid`.
 5. If the vendor is allowlisted, the amount is over the per-bill limit, and the cap has room, nothing is sent and a hold is created. The treasurer later calls `approve_hold` or `reject_hold` with the owner key (`POST /api/holds/:billId/approve|reject` in the demo). Approval checks the cap again.
 6. Anything else is rejected on-chain.
 
@@ -82,10 +96,11 @@ Allowlist changes go through `propose_allowlist_change`, which only the owner ca
 
 ### Treasurer page (`apps/web`)
 
+- The notice: NEAR testnet only, dry-run quote plus simulated settlement.
 - Summary, from `GET /api/summary`.
 - Outstanding holds, from `GET /api/holds?status=held`, each with **Approve** and **Reject** buttons.
 - Payouts, from `GET /api/payouts`.
-- Gifts grouped by fund, from `GET /api/gifts`. Every status is shown, including `refunded` and `failed`.
+- Gifts grouped by fund, from `GET /api/gifts`. Every status is shown, including `refunded` and `failed`. Simulated `sim:` deposit addresses are tagged **simulated**.
 - A **Download CSV** button that opens `GET /api/export.csv`.
 - The visible label **demo, not a tax document**.
 
@@ -93,40 +108,42 @@ The API base is `http://127.0.0.1:8787` by default. To change it:
 
 - Add `?api=http://host:port` to the page URL, or set `VITE_OPENLID_API_BASE` at dev or build time.
 - Use `?api=same-origin` to send requests through the Vite dev proxy instead. The proxy target is `OPENLID_API_URL`.
-- Use `?mock=1` to show the built-in fixture with no API.
+- Use `?mock=1` to show the built-in fixture with no API. The fixture uses dry-run gifts with `sim:` addresses.
 
-## Running
+## Running the testnet demo
 
 ```bash
-# UI only, fixture data
-cd apps/web && npm install && npm run dev
-# open http://127.0.0.1:5173/?mock=1
-
-# Full local demo: starts apps/api if present, seeds bills, starts the UI
-scripts/demo.sh            # or --seed-only / --no-ui; see the header of the script
+scripts/demo.sh            # full run
+scripts/demo.sh --no-ui    # skip the UI
 ```
 
-`scripts/demo.sh` sends two bills through `POST /api/payouts/request`:
+What `scripts/demo.sh` does, in order:
 
-- a small bill to an allowlisted vendor, which should be **paid** automatically
-- an unusual bill over the per-bill limit, which should be **held** until the treasurer acts in the UI
+1. Prints the notice: NEAR testnet only, $0 spend, and the cross-chain leg is a dry-run 1Click quote plus a simulated settlement on testnet.
+2. Refuses to run unless the network is `testnet`.
+3. Runs `scripts/testnet/setup.mjs`:
+   - Creates a `openlid-demo-<id>.testnet` account through the free testnet faucet. This account plays the church owner and treasurer.
+   - Creates the sub-accounts `agent.*`, `vendor.*`, `treasury.*`, and `tusdc.*`, funded only with testnet NEAR from the faucet.
+   - Writes keys only to `.demo-keys/`, and reuses the accounts on later runs.
+   - Deploys and initializes `contracts/test-ft` and `contracts/treasury`. Defaults: per-bill limit 100 tUSDC, monthly cap 10,000 tUSDC.
+   - Replaces the agent's bootstrap key with a single function-call key for `request_payout`.
+   - Proposes adding the vendor to the allowlist.
+   - Writes `.demo-keys/demo.env`, which holds account ids and key-file paths only.
+4. Starts `apps/api` with that config, `ONECLICK_API_KEY` unset, and `ONECLICK_DRY_RUN=true`.
+5. Asks for one dry-run gift quote. It stops unless the response has `quoteMode: "dry_run"` and a `sim:` address.
+6. Calls `POST /api/gifts/:id/simulate-settlement`, which mints tUSDC into the treasury.
+7. Sends two bills through `POST /api/payouts/request`:
+   - 50 tUSDC, which should be **paid**
+   - 500 tUSDC, which should be **held** for the treasurer
+8. Starts the treasurer page on <http://127.0.0.1:5173>.
 
-To match your contract config, set:
+If the faucet or the contract deploy cannot run, the script stops and says so. It does not fake a testnet receipt.
 
-- `DEMO_VENDOR`, which must already be allowlisted
-- `DEMO_SMALL_AMOUNT` and `DEMO_LARGE_AMOUNT`, in USDC atomic units with 6 decimals
-
-The script never sources `.env` and never reads key files. It does not create gifts.
-
-### Seeding a gift
-
-`POST /api/gifts/quote` calls the real 1Click API and returns a real deposit address. Request one only on testnet and only when you mean to. Example body, using the shape from `INTERFACES.md`:
+The page alone, with fixture data:
 
 ```bash
-curl -X POST http://127.0.0.1:8787/api/gifts/quote -H 'content-type: application/json' -d '{
-  "donor": "Demo Donor", "fund": "missions", "originAsset": "<1Click asset id>",
-  "amount": "<atomic units>", "refundTo": "<your origin-chain address>",
-  "refundType": "ORIGIN_CHAIN", "slippageTolerance": 100 }'
+cd apps/web && npm install && npm run dev
+# open http://127.0.0.1:5173/?mock=1
 ```
 
 ## Tests
@@ -146,16 +163,24 @@ cd apps/web && npm run typecheck && npm run build
 The web tests use the in-memory fixture. They check:
 
 - grouping by fund, with refunded and failed gifts kept
+- that fixture gifts are dry-run quotes with unique `sim:` addresses, tagged **simulated** on the page
 - that approve and reject call `POST /api/holds/:billId/approve|reject`
 - that the CSV button points at `/api/export.csv`
-- that the exact receipt label appears on the page
+- that the receipt label and the testnet notice appear on the page
 
 ## Known issues
 
-- **Mainnet is out of scope.** A live mainnet demo transfer happens only after an explicit yes on a funded wallet. Nothing in this repo sends mainnet transactions.
-- **1Click is mocked in tests.** No test calls the real 1Click service. The demo script does not create gifts. It only documents how.
-- **NEAR sandbox may be missing.** The `near-workspaces` sandbox may not be in this tree yet. Contract coverage is `near-sdk` unit tests. If the sandbox cannot run, the API's demo contract state may be mocked. `apps/api` documents which mode it is in.
-- **The API comes from another branch.** On the `openlid/ui` branch, `apps/api` and `contracts/` come from other worktrees. `scripts/demo.sh` prints a clear message and falls back to the UI in mock mode when the API is missing. The `npm test` command for the API assumes the API package defines a `test` script.
+- **The cross-chain leg is not real.** 1Click is mainnet-only, so the demo uses dry-run quotes (no deposit address) and a simulated settlement that mints a test token on testnet. No real cross-chain deposit happens. A live mainnet transfer would need an explicit yes on a funded wallet, and that is out of scope for this demo.
+- **1Click is mocked in tests.** No test calls the real 1Click service. Without `ONECLICK_API_KEY`, the API uses a local dry-run stub.
+- **Contracts are not on this branch.** On `openlid/ui`, `contracts/` and `apps/api` come from other worktrees.
+  - A run of `scripts/demo.sh` on this branch (Nov 11, 2026) created real testnet accounts through the faucet, with keys written only to `.demo-keys/`.
+  - It then stopped with exit code 3 because there was no treasury or test-FT wasm to deploy. No gift, settlement, or bill was created, and nothing was faked.
+  - Build the contracts after integration and re-run.
+- **24-hour allowlist timelock.** The contract delays allowlist changes by 24 hours. On a fresh deploy, the demo proposes adding the vendor, but the contract will reject both bills until that 24-hour delay has passed. Re-run `scripts/demo.sh` after 24 hours: setup completes the allowlist add, and the paid and held bills then go through. The demo does not work around this, because the delay is the policy being shown.
+- **Assumed test-FT init.** `INTERFACES.md` does not fix the test-FT init signature. `setup.mjs` assumes `new({ owner_id })`. If the contract differs, override it with `DEMO_FT_INIT_METHOD` and `DEMO_FT_INIT_ARGS`. If the token has no `storage_deposit`, that step is skipped with a note.
+- **The faucet may limit requests.** The testnet faucet can rate-limit or change its endpoint. Override the endpoint with `NEAR_TESTNET_FAUCET`. The created account is reused through `.demo-keys/state.json`.
+- **Assumed API test script.** The `npm test` command for the API assumes the API package defines a `test` script.
+- **NEAR sandbox.** `near-workspaces` sandbox tests may not be in this tree. Contract coverage is `near-sdk` unit tests.
 - **CORS.** The page calls the API cross-origin, from `:5173` to `:8787`. If the API does not send CORS headers, use `?api=same-origin`, which goes through the Vite proxy.
 - **CSV download.** The download goes to the API's URL. Whether the browser saves the file or shows it depends on the API's `Content-Disposition` header.
 - **No authentication on the treasurer page.** In the demo, the API holds the owner key path. In real use, approve and reject would be signed by the treasurer's hardware wallet or multisig, not by the server.
@@ -174,9 +199,13 @@ This comparison uses only POTLOCK's public docs at <https://docs.potlock.io>.
 **OpenLid** is not a public-goods matching round. It is one church's treasury:
 
 - Gifts are designated to the church's own funds (`general`, `missions`, `building`).
-- Gifts settle as USDC to an account the church owns.
+- Gifts settle to an account the church owns. In this demo, that settlement is a simulated tUSDC mint on testnet.
 - Money goes out only as vendor payouts. The contract enforces the vendor allowlist (with a 24-hour timelock on changes), a per-bill limit, and a monthly cap. Unusual bills are held for the treasurer.
 - There is no matching pool and no quadratic funding.
+
+## License
+
+License: to be decided.
 
 ## Credit
 

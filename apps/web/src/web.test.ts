@@ -7,7 +7,7 @@ import { CSV_FILENAME, triggerCsvDownload } from "./csv.ts";
 import { createMockFetch, fixtureState } from "./fixtures.ts";
 import { formatUsdc, groupGiftsByFund } from "./format.ts";
 import { renderGifts, renderHolds, renderSummary } from "./render.ts";
-import { RECEIPT_NOTE } from "./types.ts";
+import { RECEIPT_NOTE, TESTNET_NOTICE } from "./types.ts";
 
 describe("formatUsdc", () => {
   it("formats 6-decimal atomic strings", () => {
@@ -42,6 +42,18 @@ describe("gift grouping", () => {
     assert.match(html, /status-refunded">refunded</);
     assert.match(html, /status-failed">failed</);
     assert.match(html, /1 failed, 1 settled/);
+  });
+
+  it("fixture gifts are dry-run quotes with simulated addresses, not live deposits", () => {
+    for (const g of gifts) {
+      assert.equal(g.quoteMode, "dry_run");
+      assert.match(g.depositAddress, /^sim:/);
+    }
+    assert.equal(new Set(gifts.map((g) => g.depositAddress)).size, gifts.length);
+  });
+
+  it("marks simulated deposit addresses", () => {
+    assert.match(renderGifts(gifts), /<code title="sim:g1">sim:g1<\/code> <span class="badge">simulated<\/span>/);
   });
 
   it("escapes donor names", () => {
@@ -163,5 +175,6 @@ describe("config and page shell", () => {
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
     assert.ok(html.includes(">demo, not a tax document<"));
     assert.ok(html.includes('id="download-csv"'));
+    assert.ok(html.replace(/\s+/g, " ").includes(TESTNET_NOTICE), "testnet / dry-run notice on page");
   });
 });

@@ -1,5 +1,7 @@
-// Static demo fixture for ?mock=1 and tests. Fake account names and fake
-// deposit addresses only: no keys, no real wallets, no mainnet anything.
+// Static demo fixture for ?mock=1 and tests. Mirrors the testnet demo: every
+// gift is a dry-run quote with a simulated `sim:` deposit address (no real
+// deposit address, no live cross-chain deposit). Fake .testnet names only:
+// no keys, no real wallets, no mainnet anything.
 import type { FetchLike } from "./api.ts";
 import { FUNDS, RECEIPT_NOTE } from "./types.ts";
 import type { Gift, HoldView, PayoutView, Summary } from "./types.ts";
@@ -8,13 +10,14 @@ const gift = (id: string, donor: string, fund: Gift["fund"], amountOut: string, 
   id,
   donor,
   fund,
-  depositAddress: `0xDEMO${id.replace(/\W/g, "").toUpperCase().padEnd(36, "0")}`,
+  depositAddress: `sim:${id}`,
   depositMemo: null,
   correlationId: `demo-corr-${id}`,
   amountIn: amountOut,
   amountOut,
   originAsset: "nep141:demo-usdc.base.omft.near",
   status,
+  quoteMode: "dry_run",
   receiptNote: RECEIPT_NOTE,
 });
 

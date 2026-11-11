@@ -4,7 +4,7 @@ import { isMockMode, resolveApiBase } from "./config.ts";
 import { triggerCsvDownload } from "./csv.ts";
 import { createMockFetch } from "./fixtures.ts";
 import { renderGifts, renderHolds, renderPayouts, renderSummary } from "./render.ts";
-import { RECEIPT_NOTE } from "./types.ts";
+import { RECEIPT_NOTE, TESTNET_NOTICE } from "./types.ts";
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 
@@ -16,6 +16,7 @@ const api: Api = createApi(base, mockFetch);
 $("api-base").textContent = mock ? "(in-memory fixture)" : base || "same origin (/api via Vite proxy)";
 $("mode-badge").hidden = !mock;
 $("receipt-note").textContent = RECEIPT_NOTE;
+$("testnet-notice").textContent = TESTNET_NOTICE;
 
 function showError(err: unknown) {
   const el = $("error");

@@ -1,5 +1,6 @@
 import { countByStatus, escapeHtml as e, formatUsdc, groupGiftsByFund } from "./format.ts";
 import { FUNDS } from "./types.ts";
+import { isSimulatedAddress } from "./types.ts";
 import type { Gift, HoldView, PayoutView, Summary } from "./types.ts";
 
 const status = (s: string) => `<span class="status status-${e(s)}">${e(s)}</span>`;
@@ -58,7 +59,9 @@ function giftTable(gifts: Gift[]): string {
     .map(
       (g) => `<tr data-gift-id="${e(g.id)}"><td>${e(g.donor)}</td>
         <td class="num">${formatUsdc(g.amountOut)}</td><td>${status(g.status)}</td>
-        <td><code title="${e(g.depositAddress)}">${e(short(g.depositAddress))}</code></td>
+        <td><code title="${e(g.depositAddress)}">${e(short(g.depositAddress))}</code>${
+          isSimulatedAddress(g.depositAddress) ? ' <span class="badge">simulated</span>' : ""
+        }</td>
         <td>${e(g.originAsset)}</td></tr>`,
     )
     .join("");
