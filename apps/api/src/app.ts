@@ -6,6 +6,8 @@ import { ContractRejectedError, NearUnavailableError, type NearContractClient, t
 import { OneClickError, type OneClickClient } from './oneclick.js';
 import { DuplicateBillIdError, DuplicateDepositAddressError, type JsonStore } from './store.js';
 import {
+  BOUNDARY_NO_CUSTODY,
+  BOUNDARY_NONCASH,
   BOUNDARY_NOT_GAAP,
   BOUNDARY_PUB_1771,
   FUND_RESTRICTION,
@@ -472,7 +474,7 @@ export function createApp(deps: AppDeps): Hono {
       'vendor',
       'amount_in',
       'origin_asset',
-      'amount_usdc',
+      'amount_usdc_book_value_at_receipt',
       'status',
       'deposit_address',
       'payment_ref',
@@ -494,7 +496,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     const r = summary.reconciliation;
     const recon = [
-      '# per-fund reconciliation (USDC atomic units; available = received - paid - held)',
+      '# per-fund reconciliation (USDC atomic units, book value at receipt; available = received - paid - held)',
       'fund,restriction,gifts,received,paid,held,available',
       ...FUNDS.map((f) => {
         const x = summary.giftsByFund[f];
@@ -508,6 +510,8 @@ export function createApp(deps: AppDeps): Hono {
       `# ${RECEIPT_NOTE}`,
       `# ${BOUNDARY_PUB_1771}`,
       `# ${BOUNDARY_NOT_GAAP}`,
+      `# ${BOUNDARY_NONCASH}`,
+      `# ${BOUNDARY_NO_CUSTODY}`,
       header.join(','),
       ...rows.map((row) => row.map(csvCell).join(',')),
       '',

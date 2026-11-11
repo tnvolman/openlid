@@ -12,6 +12,14 @@ export const BOUNDARY_UNAUTHENTICATED =
   'In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.' as const;
 export const BOUNDARY_SCOPE =
   'This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.' as const;
+/** D9: digital-asset gifts are noncash property; USD/USDC figures are book value at receipt, never a deductible value. */
+export const BOUNDARY_NONCASH =
+  "Gifts of USDC or other digital assets are noncash property, not cash. Amounts shown are book value at receipt (church books only, as of the date and time received), not a deductible value. This is not a noncash acknowledgment and does not state fair market value; Forms 8283 and 8282 and any appraisal are out of scope and are the donor's or church's later tax job if they apply. A CPA must confirm current rules." as const;
+/** D10: no custody; legal review before real money. */
+export const BOUNDARY_NO_CUSTODY =
+  'OpenLid never holds or moves donor funds for someone else: gifts go to a treasury the church controls. A legal review is required before any real money. This demo is testnet only; no real funds.' as const;
+/** Label for every USD/USDC amount: church books only, as of the date and time of receipt. */
+export const BOOK_VALUE_LABEL = 'book value at receipt' as const;
 
 /** Every quote is a 1Click dry run; no payable deposit address is ever requested. */
 export const QUOTE_MODE = 'dry_run' as const;

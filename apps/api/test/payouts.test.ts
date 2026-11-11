@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createApp } from '../src/app.js';
 import { classifyNearError, ContractRejectedError, loadKeyFromFile, resolveKeyFile, UnconfiguredNearClient } from '../src/near.js';
 import { HttpOneClickClient } from '../src/oneclick.js';
+import { BOUNDARY_NO_CUSTODY, BOUNDARY_NONCASH } from '../src/types.js';
 import { giftBody, makeHarness } from './helpers.js';
 
 const VENDOR = 'roofer.testnet';
@@ -207,13 +208,27 @@ describe('payouts and holds', () => {
     assert.equal(r.status, 200);
     assert.match(r.headers.get('content-type')!, /text\/csv/);
     const lines = r.text.trim().split('\n');
-    assert.deepEqual(lines.slice(0, 3), [
+    assert.deepEqual(lines.slice(0, 5), [
       '# demo, not a tax document',
       '# This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.',
       '# This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.',
+      `# ${BOUNDARY_NONCASH}`,
+      `# ${BOUNDARY_NO_CUSTODY}`,
     ]);
-    assert.match(lines[3]!, /^type,id,/);
-    const header = lines[3]!.split(',');
+    assert.match(lines[5]!, /^type,id,/);
+    const header = lines[5]!.split(',');
+    // D9: amounts are book value at receipt, never a deductible value.
+    assert.ok(header.includes('amount_usdc_book_value_at_receipt'));
+    assert.ok(!header.includes('amount_usdc'));
+    assert.match(lines[3]!, /noncash property, not cash/);
+    assert.match(lines[3]!, /book value at receipt .*not a deductible value/);
+    assert.match(lines[3]!, /Forms 8283 and 8282/);
+    assert.match(lines[3]!, /A CPA must confirm current rules/);
+    assert.ok(!/tax[- ]deductible|tax deduction/i.test(r.text), 'never calls an amount a tax deduction');
+    // D10: no custody; legal review before real money.
+    assert.match(lines[4]!, /never holds or moves donor funds for someone else/);
+    assert.match(lines[4]!, /treasury the church controls/);
+    assert.match(lines[4]!, /legal review is required before any real money/);
     for (const col of ['created_at', 'paid_at', 'fund', 'restriction', 'payment_ref', 'request_ref']) assert.ok(header.includes(col), col);
     const col = (row: string, name: string) => row.split(',')[header.indexOf(name)];
 
