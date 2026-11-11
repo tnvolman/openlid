@@ -15,10 +15,14 @@
 #      If faucet or deploy cannot run, stop here and say why. Nothing is faked.
 #   3. Start apps/api with .demo-keys/demo.env (ids and key-file paths only),
 #      ONECLICK_API_KEY unset and ONECLICK_DRY_RUN=true.
-#   4. POST /api/gifts/quote (dry-run), then
-#      POST /api/gifts/:id/simulate-settlement for that gift.
+#   4. POST /api/gifts/quote (dry-run, missions fund), then
+#      POST /api/gifts/:id/simulate-settlement for that gift: mints tUSDC into
+#      the treasury and the owner records it in the missions fund ledger
+#      (credit_fund).
 #   5. Seed one small allowlisted bill (expected: paid) and one unusual bill
-#      over the per-bill limit (expected: held) via POST /api/payouts/request.
+#      over the per-bill limit (expected: held) via POST /api/payouts/request,
+#      both from the missions fund ("fund":"missions"). The contract only pays
+#      a bill from its own fund's balance.
 #   6. Start the treasurer page on http://127.0.0.1:5173.
 #
 # Prerequisites: Node >= 22.18, npm, curl, git; internet access to
@@ -36,7 +40,7 @@
 #   OPENLID_DEMO_KEYS_DIR default .demo-keys
 #   DEMO_SMALL_AMOUNT     default 50000000   (50 tUSDC, under the 100 tUSDC per-bill limit)
 #   DEMO_LARGE_AMOUNT     default 500000000  (500 tUSDC, over the limit, under the cap)
-#   DEMO_GIFT_AMOUNT      default 600000000  (tUSDC minted into the treasury; must cover both bills)
+#   DEMO_GIFT_AMOUNT      default 600000000  (tUSDC minted and credited to the missions fund; must cover both bills)
 #   DEMO_ORIGIN_ASSET     default nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near
 #
 # Key safety: this script never prints key material and never sources the
@@ -59,7 +63,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-ui) NO_UI=1 ;;
     --once) ONCE=1; NO_UI=1 ;;
-    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,47p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -161,7 +165,7 @@ DEPOSIT="$(jget depositAddress <<<"$BODY")"
 [[ "$QUOTE_MODE" == "dry_run" ]] || die "API returned quoteMode=\"$QUOTE_MODE\", not dry_run. Stopping for safety."
 [[ "$DEPOSIT" == sim:* ]] || die "deposit address \"$DEPOSIT\" is not a simulated sim: address. Stopping for safety."
 
-say "Gift: simulated settlement on testnet (mints tUSDC into the treasury contract)"
+say "Gift: simulated settlement on testnet (mints tUSDC into the treasury, credits the missions fund)"
 split "$(post "/api/gifts/$GIFT_ID/simulate-settlement" '{}')"
 echo "    HTTP $CODE $BODY"
 [[ "$CODE" == 2* && "$(jget status <<<"$BODY")" == "settled" ]] || die "simulate-settlement did not settle the gift"
@@ -169,12 +173,14 @@ SETTLE_TX="$(jget settlementTxHash <<<"$BODY")"
 echo "    settlement tx: ${SETTLE_TX:-"(none returned)"}"
 
 # --- 5. bills ---------------------------------------------------------------
+DEMO_FUND=missions # the demo gift's fund; both bills are paid from it
 request_payout() { # billId amount memo expected
-  split "$(post /api/payouts/request "$(printf '{"vendor":"%s","amount":"%s","billId":"%s","memo":"%s"}' "$DEMO_VENDOR" "$2" "$1" "$3")")"
+  split "$(post /api/payouts/request "$(printf '{"vendor":"%s","amount":"%s","billId":"%s","memo":"%s","fund":"%s"}' "$DEMO_VENDOR" "$2" "$1" "$3" "$DEMO_FUND")")"
   printf '    %s -> HTTP %s %s\n' "$1" "$CODE" "$BODY"
   if [[ "$CODE" != 2* ]]; then
     echo "    (rejected by the contract. If the vendor allowlist add is still inside the 24h"
-    echo "     timelock, re-run scripts/demo.sh after it passes; setup.mjs executes it then.)"
+    echo "     timelock, re-run scripts/demo.sh after it passes; setup.mjs executes it then."
+    echo "     \"insufficient fund balance\" means the $DEMO_FUND fund has not received enough.)"
     return 1
   fi
   [[ "$(jget status <<<"$BODY")" == "$4" ]] || echo "    (expected status \"$4\")"
@@ -183,7 +189,7 @@ request_payout() { # billId amount memo expected
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 AUTO_BILL="demo-auto-$stamp"
 HOLD_BILL="demo-hold-$stamp"
-say "Bills to $DEMO_VENDOR"
+say "Bills to $DEMO_VENDOR from the $DEMO_FUND fund"
 bills_ok=1
 request_payout "$AUTO_BILL" "$SMALL" "Demo: routine allowlisted bill" paid || bills_ok=0
 request_payout "$HOLD_BILL" "$LARGE" "Demo: unusual bill over per-bill limit" held || bills_ok=0

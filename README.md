@@ -14,13 +14,14 @@ Church stablecoin giving on NEAR. Hackathon build by Michael McClanahan (@tnvolm
   - A dry quote has no deposit address, so the API gives each gift a unique simulated address (`sim:<id>`) and still matches gifts by that address only.
   - With `ONECLICK_API_KEY` unset, the API uses a local stub that returns responses shaped like dry-run quotes, so it never calls the paid live endpoint.
   - No deposit is ever sent.
-- **Settlement (this demo).** The cross-chain transfer is simulated. `POST /api/gifts/:id/simulate-settlement` mints a test token (`tUSDC`, a minimal NEP-141 with 6 decimals) into the church's treasury contract on NEAR testnet, then marks the gift `settled`. In the full design, the 1Click swap would deliver real USDC instead.
+- **Settlement (this demo).** The cross-chain transfer is simulated. `POST /api/gifts/:id/simulate-settlement` mints a test token (`tUSDC`, a minimal NEP-141 with 6 decimals) into the church's treasury contract on NEAR testnet, then the owner records it in the gift's fund on-chain (`credit_fund`), then marks the gift `settled`. If the fund credit fails, the gift is not marked settled. In the full design, the 1Click swap would deliver real USDC instead.
 - **Payouts.** Rules live in the contract, not the agent. The contract enforces:
   - a vendor allowlist
   - a per-bill limit
   - a monthly cap
   - a 24-hour timelock on allowlist changes
-- **Agent.** The agent has only a restricted function-call access key, and that key can call only `request_payout`. It cannot pay an unknown vendor, go over the cap, or skip a hold.
+  - per-fund balances: every bill names a fund (`general`, `missions`, or `building`) and is paid only if that fund's `available = received - paid` covers it. A missions gift cannot pay a building bill.
+- **Agent.** The agent has only a restricted function-call access key, and that key can call only `request_payout`. It cannot pay an unknown vendor, go over the cap, skip a hold, or spend one fund's gifts on another fund's bill.
 - **Holds.** A bill to an allowlisted vendor that is over the per-bill limit is held for the church treasurer. In real use the treasurer is a hardware wallet or a multisig. The treasurer approves or rejects the bill.
 
 ## Repository layout
@@ -73,9 +74,12 @@ donor ──► POST /api/gifts/quote {donor, fund, originAsset, amount, refundT
             │  (demo) no deposit is sent on any chain
             ▼
           POST /api/gifts/:id/simulate-settlement   (testnet only)
-            │  mints tUSDC into the church's treasury contract on testnet
+            │  1. mints tUSDC into the church's treasury contract on testnet
+            │  2. owner signs credit_fund(gift.fund, amount, gift.id):
+            │     that fund's on-chain `received` grows (ledger only)
             ▼
           settled = test FT credited to the church-owned treasury contract
+                    and recorded in the gift's fund
 
           Real 1Click status mapping (covered by mocked tests; the demo
           does not use it for sim: addresses):
@@ -87,21 +91,23 @@ donor ──► POST /api/gifts/quote {donor, fund, originAsset, amount, refundT
 
 ### Payout request flow
 
-1. The treasurer or a bookkeeping helper submits a bill to `POST /api/payouts/request` with `vendor`, `amount`, a unique `billId`, and `memo`.
+1. The treasurer or a bookkeeping helper submits a bill to `POST /api/payouts/request` with `vendor`, `amount`, a unique `billId`, `memo`, and `fund` (`general`, `missions`, or `building`; anything else is a `400`).
 2. The API calls `request_payout` on the treasury contract, signing with the agent's restricted function-call key only.
-3. The contract checks the caller, the allowlist, that `bill_id` is unique, the per-bill limit, and the monthly cap.
-4. If the vendor is allowlisted, the amount is at or under the per-bill limit, and the cap has room, the contract transfers the token to the vendor. Status: `paid`.
-5. If the vendor is allowlisted, the amount is over the per-bill limit, and the cap has room, nothing is sent and a hold is created. The treasurer later calls `approve_hold` or `reject_hold` with the owner key (`POST /api/holds/:billId/approve|reject` in the demo). Approval checks the cap again.
-6. Anything else is rejected on-chain.
+3. The contract checks the caller, the fund, the allowlist, that `bill_id` is unique, the per-bill limit, the monthly cap, and that the bill fits the fund's available balance.
+4. If the vendor is allowlisted, the amount is at or under the per-bill limit, the cap has room, and the fund covers it, the contract transfers the token to the vendor and adds the amount to the fund's `paid`. Status: `paid`.
+5. If the vendor is allowlisted, the amount is over the per-bill limit, the cap has room, and the fund covers it, nothing is sent and a hold is created. The treasurer later calls `approve_hold` or `reject_hold` with the owner key (`POST /api/holds/:billId/approve|reject` in the demo). Approval checks the cap, the allowlist, and the fund balance again, since another bill may have used the fund in the meantime.
+6. Anything else is rejected on-chain, for example `insufficient fund balance: building has 0 available, bill needs 50000000`. The API returns it as `422 { "error": ... }` and the page shows it in USDC.
+
+Outstanding holds are shown per fund but do not reduce `available`; the re-check at approval is what keeps a fund from being overspent.
 
 Allowlist changes go through `propose_allowlist_change`, which only the owner can call. They take effect only when `execute_allowlist_change` is called at least 24 hours later.
 
 ### Treasurer page (`apps/web`)
 
 - The notice: NEAR testnet only, dry-run quote plus simulated settlement.
-- Summary, from `GET /api/summary`.
-- Outstanding holds, from `GET /api/holds?status=held`, each with **Approve** and **Reject** buttons.
-- Payouts, from `GET /api/payouts`.
+- Summary, from `GET /api/summary`: the live on-chain treasury balance, then a table per fund with **Gifts** (settled count), **Received**, **Paid out**, and **Available** (received minus paid out).
+- Outstanding holds, from `GET /api/holds?status=held`, with their **Fund** and **Approve** / **Reject** buttons.
+- Payouts, from `GET /api/payouts`, with their **Fund**.
 - Gifts grouped by fund, from `GET /api/gifts`. Every status is shown, including `refunded` and `failed`. Simulated `sim:` deposit addresses are tagged **simulated**.
 - A **Download CSV** button that opens `GET /api/export.csv`.
 - The visible label **demo, not a tax document**.
@@ -133,8 +139,8 @@ What `scripts/demo.sh` does, in order:
    - Writes `.demo-keys/demo.env`, which holds account ids and key-file paths only.
 4. Starts `apps/api` with that config, `ONECLICK_API_KEY` unset, and `ONECLICK_DRY_RUN=true`.
 5. Asks for one dry-run gift quote. It stops unless the response has `quoteMode: "dry_run"` and a `sim:` address.
-6. Calls `POST /api/gifts/:id/simulate-settlement`, which mints tUSDC into the treasury.
-7. Sends two bills through `POST /api/payouts/request`:
+6. Calls `POST /api/gifts/:id/simulate-settlement`, which mints 600 tUSDC into the treasury and credits it to the **missions** fund (`credit_fund`).
+7. Sends two bills through `POST /api/payouts/request`, both with `"fund":"missions"` (50 + 500 = 550, covered by the 600 tUSDC gift):
    - 50 tUSDC, which should be **paid**
    - 500 tUSDC, which should be **held** for the treasurer
 8. Starts the treasurer page on <http://127.0.0.1:5173>.
@@ -167,6 +173,7 @@ The web tests use the in-memory fixture. They check:
 - grouping by fund, with refunded and failed gifts kept
 - that fixture gifts are dry-run quotes with unique `sim:` addresses, tagged **simulated** on the page
 - that approve and reject call `POST /api/holds/:billId/approve|reject`
+- the per-fund summary table (Gifts, Received, Paid out, Available), the Fund column on payouts and holds, and a clear message when a fund cannot cover an approval
 - that the CSV button points at `/api/export.csv`
 - that the receipt label and the testnet notice appear on the page
 
@@ -177,6 +184,8 @@ The web tests use the in-memory fixture. They check:
 - **Wasm filenames.** After `cargo build --target wasm32-unknown-unknown --release`, setup looks for `contracts/treasury/target/wasm32-unknown-unknown/release/openlid_treasury.wasm` and `contracts/test-ft/target/wasm32-unknown-unknown/release/openlid_test_ft.wasm` (and the `target/near/` equivalents). Build those before `scripts/demo.sh`.
 - **24-hour allowlist timelock.** Later allowlist add or remove still waits 24 hours. A fresh deploy may pass an `initial_allowlist` to `new`; those vendors are active immediately, as deploy-time configuration rather than a later change. The demo uses that so the first run can pay and hold bills on the same day.
 - **Test-FT init.** The test FT is initialized with `new({ owner })`, matching `contracts/test-ft`. Override with `DEMO_FT_INIT_METHOD` and `DEMO_FT_INIT_ARGS` only if you swap the token. If the token has no `storage_deposit`, that step is skipped with a note.
+- **Per-fund ledger is a breaking contract change.** The treasury's stored state and its `request_payout` arguments changed, and there is no migration. The existing testnet treasury `treasury.openlid-demo-mwbp9t7m.testnet` cannot be upgraded in place; run the demo against a fresh account (for example `OPENLID_DEMO_KEYS_DIR=.demo-keys/fund-ledger scripts/demo.sh --once` after rebuilding both wasm files). See INTERFACES.md, "Breaking change: per-fund ledger". Not redeployed as part of this change.
+- **Only simulated settlement credits funds on-chain.** A gift that settles through a real 1Click `SUCCESS` (`/api/gifts/:id/sync`, not used in the demo) shows in the summary, but its fund is not credited on-chain until the owner calls `credit_fund`.
 - **The faucet may limit requests.** The testnet faucet can rate-limit or change its endpoint. Override the endpoint with `NEAR_TESTNET_FAUCET`. The created account is reused through `.demo-keys/state.json`.
 - **Assumed API test script.** The `npm test` command for the API assumes the API package defines a `test` script.
 - **NEAR sandbox.** `near-workspaces` sandbox tests may not be in this tree. Contract coverage is `near-sdk` unit tests.

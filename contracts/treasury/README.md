@@ -2,8 +2,10 @@
 
 Rust `near-sdk` 5 contract that holds USDC (NEP-141) for a church and enforces
 payout policy on-chain: per-bill limit, calendar-month (UTC) cap, vendor
-allowlist with a 24 hour change delay, and treasurer holds for bills over the
-per-bill limit. The interface (methods, args, views, events) is defined in
+allowlist with a 24 hour change delay, treasurer holds for bills over the
+per-bill limit, and per-fund balances (`general`, `missions`, `building`): a
+bill is paid only from its own fund's `available = received - paid`. The
+interface (methods, args, views, events) is defined in
 [`INTERFACES.md`](../../INTERFACES.md) and implemented as written.
 
 ## Testnet demo: settlement uses a test FT
@@ -11,7 +13,8 @@ per-bill limit. The interface (methods, args, views, events) is defined in
 The OpenLid demo runs on NEAR **testnet only**, with $0 spend. In the demo,
 `usdc_token` points at the testnet test FT in [`../test-ft`](../test-ft)
 (`tUSDC`, 6 decimals), **not mainnet USDC**. Gift "settlement" is simulated by
-minting or transferring `tUSDC` into this treasury contract. 1Click is only
+minting `tUSDC` into this treasury contract and then calling `credit_fund` for
+the gift's fund. 1Click is only
 called with dry-run quotes; no 1Click deposit is ever sent and no cross-chain
 transfer happens. Treasury policy (limits, cap, allowlist, holds) runs for real
 on testnet against that token.
@@ -51,7 +54,7 @@ only verified to compile. Nothing here has been deployed.
 - `request_payout` returns `"held"` for a hold. For a payment it returns the
   `ft_transfer` promise chained to a private callback `on_payout_transfer`,
   whose result is `"paid"`. If the token contract rejects the transfer, the
-  callback rolls back the payout record and cap usage (and returns an approved
+  callback rolls back the payout record, cap usage and fund `paid` (and returns an approved
   hold to `held`), logs a plain message, and resolves to `"transfer_failed"`.
   `approve_hold` behaves the same way. `on_payout_transfer` is an internal
   callback (callable only by the contract itself), not part of the public API.
@@ -65,6 +68,19 @@ only verified to compile. Nothing here has been deployed.
 - A removed vendor stays known but inactive; `request_payout` panics with
   "vendor is not active on the allowlist". `get_allowlist` lists active vendors.
 - Holds do not reserve cap. `approve_hold` re-checks the cap at approval time.
+- Per-fund ledger: `fund_ledger` maps each fund to `{ received, paid }`.
+  `credit_fund(fund, amount, gift_id)` (owner only) adds to `received` and
+  moves no tokens; `credited_gifts` rejects a second credit for the same
+  `gift_id`. `request_payout` takes a required `fund` and refuses a bill (paid
+  or held) over the fund's `available` with "insufficient fund balance: ...".
+  `pay` adds to `paid`; the `on_payout_transfer` rollback subtracts it.
+  `approve_hold` re-checks `available`; `reject_hold` leaves the ledger alone.
+  Holds do not reserve fund balance; `get_fund` / `get_fund_ledger` report
+  outstanding holds as `held`, computed from `holds`.
+- Breaking change: `Payout`/`Hold` gained `fund` and the state gained two
+  collections, with no migration. A deployment of the previous version (e.g.
+  `treasury.openlid-demo-mwbp9t7m.testnet`) needs a fresh account and
+  redeploy; see INTERFACES.md.
 - Timestamps (`execute_after`) are `U64` strings in JSON; amounts are `U128`
   strings. Events use `EVENT_JSON:` with `standard: "openlid"`,
   `version: "1.0.0"`, and `data` as a one-element array.
