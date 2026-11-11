@@ -11,6 +11,7 @@
 *.near-credentials
 .near-credentials/
 keys/
+.demo-keys/
 keystore/
 
 # deps and build
