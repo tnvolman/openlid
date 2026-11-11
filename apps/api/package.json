@@ -1,0 +1,26 @@
+{
+  "name": "@openlid/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenLid HTTP API: 1Click gift intake and treasury payout requests (demo, not a tax document)",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.6",
+    "hono": "^4.13.17",
+    "near-api-js": "^7.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
