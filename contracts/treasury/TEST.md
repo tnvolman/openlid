@@ -30,3 +30,10 @@ rejections. The failure callback is tested by injecting a failed promise result.
 
 Not used. No sandbox (near-workspaces) integration test was written or run, so
 end-to-end behaviour against a real NEP-141 token contract is untested here.
+
+## Testnet token
+
+Unit tests use the placeholder token id `usdc.near`. The testnet demo uses the
+`tUSDC` test FT from `contracts/test-ft` (tested separately with
+`cd contracts/test-ft && cargo test`), never mainnet USDC, and never sends a
+1Click deposit.

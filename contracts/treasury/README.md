@@ -6,6 +6,16 @@ allowlist with a 24 hour change delay, and treasurer holds for bills over the
 per-bill limit. The interface (methods, args, views, events) is defined in
 [`INTERFACES.md`](../../INTERFACES.md) and implemented as written.
 
+## Testnet demo: settlement uses a test FT
+
+The OpenLid demo runs on NEAR **testnet only**, with $0 spend. In the demo,
+`usdc_token` points at the testnet test FT in [`../test-ft`](../test-ft)
+(`tUSDC`, 6 decimals), **not mainnet USDC**. Gift "settlement" is simulated by
+minting or transferring `tUSDC` into this treasury contract. 1Click is only
+called with dry-run quotes; no 1Click deposit is ever sent and no cross-chain
+transfer happens. Treasury policy (limits, cap, allowlist, holds) runs for real
+on testnet against that token.
+
 ## Test
 
 ```sh
