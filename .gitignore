@@ -1,0 +1,34 @@
+# secrets and local keys — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*
+*secret*
+*seed*
+*private*key*
+*.near-credentials
+.near-credentials/
+keys/
+keystore/
+
+# deps and build
+node_modules/
+dist/
+build/
+target/
+.near-workspaces/
+coverage/
+.turbo/
+.vite/
+.next/
+out/
+
+# misc
+.DS_Store
+*.log
+.idea/
+.vscode/
+tmp/
+data/
