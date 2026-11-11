@@ -99,13 +99,21 @@ export interface Summary {
 
 export const RECEIPT_NOTE = "demo, not a tax document";
 
-/** Scope boundaries, visible on the page (index.html) and, for the first two, in the CSV header. */
+/** Scope boundaries, visible on the page (index.html). The CSV header repeats all but the 3rd and 4th. */
 export const BOUNDARY_LINES = [
   "This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.",
   "This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.",
   "In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.",
   "This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.",
+  // D9: noncash property; book value at receipt, not a deductible value.
+  "Gifts of USDC or other digital assets are noncash property, not cash. Amounts shown are book value at receipt (church books only, as of the date and time received), not a deductible value. This is not a noncash acknowledgment and does not state fair market value; Forms 8283 and 8282 and any appraisal are out of scope and are the donor's or church's later tax job if they apply. A CPA must confirm current rules.",
+  // D10: no custody; legal review before real money.
+  "OpenLid never holds or moves donor funds for someone else: gifts go to a treasury the church controls. A legal review is required before any real money. This demo is testnet only; no real funds.",
 ] as const;
+
+/** Label for every USD/USDC amount on the page and in the CSV. */
+export const BOOK_VALUE_LABEL = "book value at receipt";
+export const AMOUNT_CAPTION = "USDC amounts are book value at receipt (church books only), not a deductible value.";
 
 export const TESTNET_NOTICE =
   "NEAR testnet only. The cross-chain leg is a dry-run 1Click quote plus a simulated settlement on NEAR testnet. No real funds.";

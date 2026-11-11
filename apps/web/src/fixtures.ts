@@ -130,7 +130,9 @@ export function fixtureCsv(s: FixtureState): string {
     `# ${RECEIPT_NOTE}`,
     `# ${BOUNDARY_LINES[0]}`,
     `# ${BOUNDARY_LINES[1]}`,
-    "type,id,party,fund,restriction,amount,status,paid_at,payment_ref",
+    `# ${BOUNDARY_LINES[4]}`,
+    `# ${BOUNDARY_LINES[5]}`,
+    "type,id,party,fund,restriction,amount_usdc_book_value_at_receipt,status,paid_at,payment_ref",
   ];
   for (const g of s.gifts) {
     lines.push(`gift,${g.id},${g.donor},${g.fund},${FUND_RESTRICTION[g.fund]},${g.amountOut},${g.status},,`);
@@ -141,7 +143,7 @@ export function fixtureCsv(s: FixtureState): string {
     );
   }
   const sum = summarize(s);
-  lines.push("", "# per-fund reconciliation (USDC atomic units; available = received - paid - held)");
+  lines.push("", "# per-fund reconciliation (USDC atomic units, book value at receipt; available = received - paid - held)");
   lines.push("fund,restriction,gifts,received,paid,held,available");
   for (const f of FUNDS) {
     const x = sum.giftsByFund[f];

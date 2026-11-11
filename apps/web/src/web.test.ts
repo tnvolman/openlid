@@ -7,7 +7,15 @@ import { CSV_FILENAME, triggerCsvDownload } from "./csv.ts";
 import { createMockFetch, fixtureState, summarize } from "./fixtures.ts";
 import { formatTime, formatUsdc, friendlyError, groupGiftsByFund } from "./format.ts";
 import { renderGifts, renderHolds, renderPayouts, renderReconciliation, renderSummary } from "./render.ts";
-import { BOUNDARY_LINES, FUND_RESTRICTION, FUND_SILO_NOTE, RECEIPT_NOTE, TESTNET_NOTICE } from "./types.ts";
+import {
+  AMOUNT_CAPTION,
+  BOOK_VALUE_LABEL,
+  BOUNDARY_LINES,
+  FUND_RESTRICTION,
+  FUND_SILO_NOTE,
+  RECEIPT_NOTE,
+  TESTNET_NOTICE,
+} from "./types.ts";
 
 describe("formatUsdc", () => {
   it("formats 6-decimal atomic strings", () => {
@@ -256,9 +264,9 @@ describe("cash vs fund ledgers (B3)", () => {
 });
 
 describe("boundary lines (C3 / D2 / D3 / D4)", () => {
-  it("the page shows all four, verbatim, plus the receipt and testnet notices", () => {
+  it("the page shows all boundary lines, verbatim, plus the receipt and testnet notices", () => {
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\s+/g, " ");
-    assert.equal(BOUNDARY_LINES.length, 4);
+    assert.equal(BOUNDARY_LINES.length, 6);
     for (const line of BOUNDARY_LINES) assert.ok(html.includes(`<li>${line}</li>`), line);
     assert.match(BOUNDARY_LINES[0], /IRS Publication 1771/);
     assert.match(BOUNDARY_LINES[1], /not GAAP financial statements and not an audit, review, or compilation/);
@@ -268,16 +276,78 @@ describe("boundary lines (C3 / D2 / D3 / D4)", () => {
     assert.ok(html.includes(TESTNET_NOTICE));
   });
 
-  it("the CSV header carries D2 and D3 after the receipt note, and fund on every row plus reconciliation", async () => {
+  it("the CSV header carries D2, D3, D9 and D10 after the receipt note, and fund on every row plus reconciliation", async () => {
     const text = await (await createMockFetch()("/api/export.csv")).text();
     const lines = text.trim().split("\n");
-    assert.deepEqual(lines.slice(0, 3), [`# ${RECEIPT_NOTE}`, `# ${BOUNDARY_LINES[0]}`, `# ${BOUNDARY_LINES[1]}`]);
-    const header = lines[3].split(",");
+    assert.deepEqual(lines.slice(0, 5), [
+      `# ${RECEIPT_NOTE}`,
+      `# ${BOUNDARY_LINES[0]}`,
+      `# ${BOUNDARY_LINES[1]}`,
+      `# ${BOUNDARY_LINES[4]}`,
+      `# ${BOUNDARY_LINES[5]}`,
+    ]);
+    const header = lines[5].split(",");
     const rows = lines.filter((l) => l.startsWith("gift,") || l.startsWith("payout,"));
     for (const r of rows) assert.ok(["general", "missions", "building"].includes(r.split(",")[header.indexOf("fund")]), r);
     assert.ok(lines.includes("payout,bill-electric-001,power-co.demo.testnet,building,with donor restrictions,180000000,paid,2026-11-03T15:20:00.000Z,demoTxElectric001PaidOnTestnet"));
     assert.ok(lines.includes("general,without donor restrictions,1,100000000,0,90000000,10000000"));
     assert.match(text, /fund ledgers total \(received - paid, from chain\): 230000000; match/);
+  });
+});
+
+describe("noncash property and book value at receipt (D9)", () => {
+  const page = () => readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\s+/g, " ");
+
+  it("the page says gifts are noncash property, amounts are book value at receipt, not a deductible value", () => {
+    const line = BOUNDARY_LINES[4];
+    assert.ok(page().includes(`<li>${line}</li>`));
+    assert.match(line, /noncash property, not cash/);
+    assert.match(line, /book value at receipt \(church books only, as of the date and time received\), not a deductible value/);
+    assert.match(line, /not a noncash acknowledgment and does not state fair market value/);
+    assert.match(line, /Forms 8283 and 8282/);
+    assert.match(line, /A CPA must confirm current rules/);
+  });
+
+  it("every amount table on the page is captioned book value at receipt", async () => {
+    const st = fixtureState();
+    const s = await createApi("", createMockFetch()).summary();
+    for (const html of [renderSummary(s), renderPayouts(st.payouts), renderHolds(st.holds), renderGifts(st.gifts)]) {
+      const tables = html.match(/<table>/g)?.length ?? 0;
+      const captions = html.split(`<caption>${AMOUNT_CAPTION}</caption>`).length - 1;
+      assert.ok(tables > 0);
+      assert.equal(captions, tables, html.slice(0, 120));
+    }
+    assert.match(AMOUNT_CAPTION, new RegExp(`${BOOK_VALUE_LABEL}.*not a deductible value`));
+  });
+
+  it("the CSV labels amounts book value at receipt", async () => {
+    const text = await (await createMockFetch()("/api/export.csv")).text();
+    assert.ok(text.split("\n")[5].includes("amount_usdc_book_value_at_receipt"));
+    assert.match(text, /# per-fund reconciliation \(USDC atomic units, book value at receipt;/);
+  });
+
+  it("never calls an amount a tax deduction or tax-deductible, on the page or in the CSV", async () => {
+    const st = fixtureState();
+    const s = await createApi("", createMockFetch()).summary();
+    const rendered = [page(), renderSummary(s), renderPayouts(st.payouts), renderHolds(st.holds), renderGifts(st.gifts)].join(" ");
+    const csv = await (await createMockFetch()("/api/export.csv")).text();
+    for (const text of [rendered, csv]) {
+      assert.ok(!/tax[- ]deductible|tax deduction|deductible amount/i.test(text));
+      // "deductible" only ever appears negated.
+      for (const m of text.matchAll(/.{0,6}deductible value/g)) assert.match(m[0], /not a deductible value/);
+    }
+  });
+});
+
+describe("no custody; legal review before real money (D10)", () => {
+  it("the page says OpenLid never holds donor funds, the treasury is church-controlled, and legal review comes first", () => {
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\s+/g, " ");
+    const line = BOUNDARY_LINES[5];
+    assert.ok(html.includes(`<li>${line}</li>`));
+    assert.match(line, /OpenLid never holds or moves donor funds for someone else/);
+    assert.match(line, /gifts go to a treasury the church controls/);
+    assert.match(line, /A legal review is required before any real money/);
+    assert.match(line, /testnet only; no real funds/);
   });
 });
 

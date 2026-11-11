@@ -1,5 +1,5 @@
 import { countByStatus, escapeHtml as e, formatSignedUsdc, formatTime, formatUsdc, groupGiftsByFund } from "./format.ts";
-import { FUND_RESTRICTION, FUND_SILO_NOTE, FUNDS } from "./types.ts";
+import { AMOUNT_CAPTION, FUND_RESTRICTION, FUND_SILO_NOTE, FUNDS } from "./types.ts";
 import { isSimulatedAddress } from "./types.ts";
 import type { Gift, HoldView, PayoutView, Summary } from "./types.ts";
 
@@ -23,6 +23,7 @@ export function renderSummary(s: Summary): string {
   }).join("");
   return `${renderReconciliation(s)}
     <table>
+      <caption>${e(AMOUNT_CAPTION)}</caption>
       <thead><tr><th>Fund</th><th>Restriction</th><th class="num">Gifts</th><th class="num">Received</th><th class="num">Paid out</th><th class="num">Held</th><th class="num">Available</th></tr></thead>
       <tbody>${fundRows}</tbody>
     </table>
@@ -72,6 +73,7 @@ export function renderHolds(holds: HoldView[]): string {
     )
     .join("");
   return `<table>
+    <caption>${e(AMOUNT_CAPTION)}</caption>
     <thead><tr><th>Bill</th><th>Fund</th><th>Vendor</th><th class="num">Amount</th><th>Memo</th><th>Requested</th><th>Request ref</th><th>Status</th><th>Treasurer</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
@@ -86,6 +88,7 @@ export function renderPayouts(payouts: PayoutView[]): string {
     )
     .join("");
   return `<table>
+    <caption>${e(AMOUNT_CAPTION)}</caption>
     <thead><tr><th>Bill</th><th>Fund</th><th>Vendor</th><th class="num">Amount</th><th>Memo</th><th>Requested</th><th>Paid</th><th>Payment ref</th><th>Status</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
@@ -103,6 +106,7 @@ function giftTable(gifts: Gift[]): string {
     )
     .join("");
   return `<table>
+    <caption>${e(AMOUNT_CAPTION)}</caption>
     <thead><tr><th>Donor</th><th class="num">USDC out</th><th>Status</th><th>Deposit address</th><th>Origin asset</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
