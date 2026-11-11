@@ -1,4 +1,4 @@
-import { countByStatus, escapeHtml as e, formatSignedUsdc, formatTime, formatUsdc, groupGiftsByFund } from "./format.ts";
+import { countByStatus, escapeHtml as e, formatDate, formatFund, formatSignedUsdc, formatTime, formatUsdc, formatUsdcPrecise, groupGiftsByFund } from "./format.ts";
 import { AMOUNT_CAPTION, FUND_RESTRICTION, FUND_SILO_NOTE, FUNDS, RECON_NOTE } from "./types.ts";
 import { isSimulatedAddress } from "./types.ts";
 import type { Gift, HoldView, PayoutView, Summary } from "./types.ts";
@@ -16,8 +16,17 @@ function figure(atomic: string | null | undefined): string {
   return s.endsWith(" USDC") ? `${s.slice(0, -5)} <span class="unit">USDC</span>` : s;
 }
 
-const kpi = (label: string, value: string, foot: string) =>
-  `<div class="kpi"><p class="kpi-label">${label}</p><p class="kpi-num">${value}</p>${foot}</div>`;
+const amountTitle = (atomic: string | null | undefined) => {
+  const full = formatUsdcPrecise(atomic);
+  return full === "—" ? "" : ` title="${e(full)}"`;
+};
+
+/** Table cell: 2-decimal display, full 6-decimal precision in the tooltip. */
+const amountCell = (atomic: string | null | undefined, cls = "num") =>
+  `<td class="${cls}"${amountTitle(atomic)}>${formatUsdc(atomic)}</td>`;
+
+const kpi = (label: string, value: string, foot: string, atomic?: string | null) =>
+  `<div class="kpi"><p class="kpi-label">${label}</p><p class="kpi-num"${atomic != null ? amountTitle(atomic) : ""}>${value}</p>${foot}</div>`;
 
 export function renderSummary(s: Summary): string {
   const fundRows = FUNDS.map((f) => {
@@ -29,9 +38,9 @@ export function renderSummary(s: Summary): string {
       held: "0",
       available: "0",
     };
-    return `<tr data-fund="${f}"><td class="fund-name" data-restriction="${e(row.restriction ?? FUND_RESTRICTION[f])}">${f}</td><td class="restriction hide-m">${e(row.restriction ?? FUND_RESTRICTION[f])}</td><td class="num hide-m">${row.count}</td>
-      <td class="num hide-m">${formatUsdc(row.received)}</td><td class="num hide-m">${formatUsdc(row.paidOut)}</td>
-      <td class="num">${formatUsdc(row.held)}</td><td class="num">${formatUsdc(row.available)}</td></tr>`;
+    return `<tr data-fund="${f}"><td class="fund-name" data-restriction="${e(row.restriction ?? FUND_RESTRICTION[f])}">${e(formatFund(f))}</td><td class="restriction hide-m">${e(row.restriction ?? FUND_RESTRICTION[f])}</td><td class="num hide-m">${row.count}</td>
+      ${amountCell(row.received, "num hide-m")}${amountCell(row.paidOut, "num hide-m")}
+      ${amountCell(row.held)}${amountCell(row.available)}</tr>`;
   }).join("");
   return `${renderReconciliation(s)}
     <section>
@@ -58,7 +67,7 @@ export function renderReconciliation(s: Summary): string {
   const cash = s.treasuryBalance ?? r?.cash ?? null;
   const cards: string[] = [];
   if (cash != null) {
-    cards.push(kpi("Treasury balance", figure(cash), `<p class="kpi-note">Live, NEAR testnet</p>`));
+    cards.push(kpi("Treasury balance", figure(cash), `<p class="kpi-note">Live, NEAR testnet</p>`, cash));
   }
   let recon: string;
   let ledgerNote = "";
@@ -74,18 +83,23 @@ export function renderReconciliation(s: Summary): string {
       recon = `<p class="recon recon-unknown" data-recon="unknown">Cash could not be read, so cash vs fund ledgers is not checked.</p>`;
     }
   }
-  cards.push(kpi("Fund ledgers", r ? figure(r.ledgerTotal) : "—", `${recon}${ledgerNote}`));
-  cards.push(kpi("Paid out", figure(s.payouts.paidAmount), `<p class="kpi-note">${plural(s.payouts.paidCount, "payout", "payouts")} paid</p>`));
+  cards.push(kpi("Fund ledgers", r ? figure(r.ledgerTotal) : "—", `${recon}${ledgerNote}`, r ? r.ledgerTotal : null));
+  cards.push(kpi("Paid out", figure(s.payouts.paidAmount), `<p class="kpi-note">${plural(s.payouts.paidCount, "payout", "payouts")} paid</p>`, s.payouts.paidAmount));
   const n = s.holds.heldCount;
   const holdNote = n === 0 ? "No bills waiting" : `${plural(n, "bill needs", "bills need")} a decision`;
-  cards.push(kpi("On hold", figure(s.holds.heldAmount), `<p class="kpi-note">${holdNote}</p>`));
+  cards.push(kpi("On hold", figure(s.holds.heldAmount), `<p class="kpi-note">${holdNote}</p>`, s.holds.heldAmount));
   return `<div class="kpis">${cards.join("\n")}</div>
     <p class="note recon-note">${e(RECON_NOTE)}</p>`;
 }
 
 const ref = (hash: string | null | undefined) => (hash ? `<code title="${e(hash)}">${e(short(hash))}</code>` : "—");
 
-const timeCell = (iso: string | null | undefined) => {
+const timeCell = (iso: string | null | undefined, mode: "date" | "datetime" = "datetime") => {
+  if (mode === "date") {
+    const date = formatDate(iso);
+    const full = formatTime(iso);
+    return iso && date !== "—" ? `<td title="${e(full)}">${e(date)}</td>` : "<td>—</td>";
+  }
   const label = formatTime(iso);
   return iso && label !== "—" ? `<td title="${e(iso)}">${e(label)}</td>` : "<td>—</td>";
 };
@@ -99,7 +113,7 @@ const billCell = (
   opts: { mobileMeta?: string; tabletMeta?: string; mobileRef?: string; facts?: string } = {},
 ) => {
   const name = b.memo || b.vendor;
-  return `<td class="bill"><span class="bill-name" title="${e(name)}">${e(name)}</span><span class="bill-to" title="${e(b.vendor)}">to <span class="nowrap">${e(b.vendor)}</span></span><span class="bill-meta"><code title="${e(b.bill_id)}">${e(b.bill_id)}</code><span class="m-only"> · <span class="cap">${e(b.fund)}</span>${opts.mobileMeta ?? ""}</span></span>${opts.tabletMeta ? `<span class="bill-meta t-only">${opts.tabletMeta}</span>` : ""}${opts.mobileRef ?? ""}${opts.facts ?? ""}</td>`;
+  return `<td class="bill"><span class="bill-name" title="${e(name)}">${e(name)}</span><span class="bill-to" title="${e(b.vendor)}">to <span class="nowrap">${e(b.vendor)}</span></span><span class="bill-meta"><code title="${e(b.bill_id)}">${e(b.bill_id)}</code><span class="m-only"> · <span class="cap">${e(formatFund(b.fund))}</span>${opts.mobileMeta ?? ""}</span></span>${opts.tabletMeta ? `<span class="bill-meta t-only">${opts.tabletMeta}</span>` : ""}${opts.mobileRef ?? ""}${opts.facts ?? ""}</td>`;
 };
 
 export function renderHolds(holds: HoldView[]): string {
@@ -109,11 +123,11 @@ export function renderHolds(holds: HoldView[]): string {
     .map(
       (h) => `<tr data-bill-id="${e(h.bill_id)}">
         ${billCell(h, {
-          tabletMeta: `<span class="cap">${e(h.fund)}</span> · ${e(formatTime(h.requestedAt))} · ${ref(h.requestTxHash)}`,
-          facts: `<span class="bill-facts m-only"><span class="cap">${e(h.fund)}</span> · ${e(formatUsdc(h.amount))}</span>`,
-        })}<td>${e(h.fund)}</td><td>${e(h.vendor)}</td>
-        <td class="num">${formatUsdc(h.amount)}</td><td>${e(h.memo)}</td>
-        ${timeCell(h.requestedAt)}<td>${ref(h.requestTxHash)}</td><td>${status(h.status)}</td>
+          tabletMeta: `<span class="cap">${e(formatFund(h.fund))}</span> · ${e(formatTime(h.requestedAt))} · ${ref(h.requestTxHash)}`,
+          facts: `<span class="bill-facts m-only"${amountTitle(h.amount)}><span class="cap">${e(formatFund(h.fund))}</span> · ${e(formatUsdc(h.amount))}</span>`,
+        })}<td>${e(formatFund(h.fund))}</td><td>${e(h.vendor)}</td>
+        ${amountCell(h.amount)}<td>${e(h.memo)}</td>
+        ${timeCell(h.requestedAt, "date")}<td>${ref(h.requestTxHash)}</td><td>${status(h.status)}</td>
         <td class="actions"><div class="acts">
           <button type="button" class="btn btn-reject" data-action="reject" data-bill-id="${e(h.bill_id)}">Reject</button>
           <button type="button" class="btn btn-approve" data-action="approve" data-bill-id="${e(h.bill_id)}">Approve</button>
@@ -134,11 +148,11 @@ export function renderPayouts(payouts: PayoutView[]): string {
   const rows = payouts
     .map(
       (p) => `<tr data-bill-id="${e(p.bill_id)}">${billCell(p, {
-          tabletMeta: `<span class="cap">${e(p.fund)}</span> · ${e(formatTime(p.requestedAt))} · tx ${ref(p.paymentTxHash)}`,
+          tabletMeta: `<span class="cap">${e(formatFund(p.fund))}</span> · ${e(formatTime(p.requestedAt))} · tx ${ref(p.paymentTxHash)}`,
           mobileRef: `<span class="bill-meta m-only">tx ${ref(p.paymentTxHash)}</span>`,
-        })}<td>${e(p.fund)}</td><td>${e(p.vendor)}</td>
-        <td class="num">${formatUsdc(p.amount)}</td><td>${e(p.memo)}</td>
-        ${timeCell(p.requestedAt)}${timeCell(p.paidAt)}<td>${ref(p.paymentTxHash)}</td><td>${status(p.status)}</td></tr>`,
+        })}<td>${e(formatFund(p.fund))}</td><td>${e(p.vendor)}</td>
+        ${amountCell(p.amount)}<td>${e(p.memo)}</td>
+        ${timeCell(p.requestedAt, "date")}${timeCell(p.paidAt)}<td>${ref(p.paymentTxHash)}</td><td>${status(p.status)}</td></tr>`,
     )
     .join("");
   return tableCard(
@@ -158,7 +172,7 @@ function giftTable(gifts: Gift[]): string {
   const rows = gifts
     .map(
       (g) => `<tr data-gift-id="${e(g.id)}"><td class="donor" title="${e(g.donor)}">${e(g.donor)}<span class="bill-meta m-only">${deposit(g)}</span></td>
-        <td class="num">${formatUsdc(g.amountOut)}</td><td>${status(g.status)}</td>
+        ${amountCell(g.amountOut)}<td>${status(g.status)}</td>
         <td class="deposit">${deposit(g)}</td>
         <td class="origin" title="${e(g.originAsset)}">${e(g.originAsset)}</td></tr>`,
     )
@@ -179,7 +193,7 @@ export function renderGifts(gifts: Gift[]): string {
       .map(([k, v]) => `${v} ${k}`)
       .join(", ");
     return `<div class="fund" data-fund="${f}">
-      <h3><span class="cap">${f}</span> <small>(${groups[f].length}${counts ? `: ${e(counts)}` : ""})</small></h3>
+      <h3><span class="cap">${e(formatFund(f))}</span> <small>(${groups[f].length}${counts ? `: ${e(counts)}` : ""})</small></h3>
       ${giftTable(groups[f])}</div>`;
   });
   if (groups.other.length) {

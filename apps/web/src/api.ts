@@ -15,8 +15,8 @@ export function createApi(base: string, fetchImpl: FetchLike = (i, init) => fetc
   const root = base.replace(/\/+$/, "");
 
   async function call<T>(path: string, init?: RequestInit): Promise<T> {
-    // no-store: the page must always show live hold/payout state, never a cached copy.
-    const res = await fetchImpl(`${root}${path}`, { cache: "no-store", ...init });
+    // no-store last so a caller cannot override it; the page must show live hold/payout state.
+    const res = await fetchImpl(`${root}${path}`, { ...init, cache: "no-store" });
     const text = await res.text();
     let body: unknown = null;
     try {

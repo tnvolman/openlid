@@ -144,6 +144,11 @@ export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
 
   app.use('/api/*', cors({ origin: CORS_ORIGINS, allowMethods: ['GET', 'POST', 'OPTIONS'] }));
+  // GET /api/holds and friends must not be reused from the HTTP cache on Refresh.
+  app.use('/api/*', async (c, next) => {
+    await next();
+    c.header('Cache-Control', 'no-store');
+  });
 
   app.onError((err, c) => {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);

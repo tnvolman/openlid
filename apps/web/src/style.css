@@ -262,14 +262,15 @@ th.num {
    Desktop, 1024px and up (1280 / 1440 / 1920). Content width is 1056px
    because .wrap is max-width: 1120px with 32px padding — same at all three.
    Keep Status and Treasurer (Approve/Reject) visible. Truncate refs; do not
-   hide those action/status columns. Amount is a fixed 232px so
-   "1,234,567.89 USDC" never collides with the next column.
+   hide those action/status columns. The bill title column is at least 240px.
+   Requested shows the date only (time in a tooltip). Request ref is ~96px
+   with an ellipsis. Amount fits "1,234,567.89 USDC".
    -------------------------------------------------------------------------- */
 @media (min-width: 1024px) {
-  .holds th:nth-child(1), .holds td:nth-child(1) { width: auto; }
+  .holds th:nth-child(1), .holds td:nth-child(1) { width: auto; min-width: 240px; }
   .holds th:nth-child(2), .holds td:nth-child(2) { width: 88px; }
-  .holds th:nth-child(4), .holds td:nth-child(4) { width: 248px; }
-  .holds th:nth-child(6), .holds td:nth-child(6) { width: 152px; }
+  .holds th:nth-child(4), .holds td:nth-child(4) { width: 232px; }
+  .holds th:nth-child(6), .holds td:nth-child(6) { width: 88px; }
   .holds th:nth-child(7), .holds td:nth-child(7) { width: 96px; }
   .holds th:nth-child(8), .holds td:nth-child(8) { width: 80px; }
   .holds th:nth-child(9), .holds td.actions {
@@ -277,10 +278,10 @@ th.num {
     white-space: nowrap;
   }
 
-  .payouts th:nth-child(1), .payouts td:nth-child(1) { width: auto; }
+  .payouts th:nth-child(1), .payouts td:nth-child(1) { width: auto; min-width: 240px; }
   .payouts th:nth-child(2), .payouts td:nth-child(2) { width: 88px; }
-  .payouts th:nth-child(4), .payouts td:nth-child(4) { width: 248px; }
-  .payouts th:nth-child(6), .payouts td:nth-child(6) { width: 152px; }
+  .payouts th:nth-child(4), .payouts td:nth-child(4) { width: 232px; }
+  .payouts th:nth-child(6), .payouts td:nth-child(6) { width: 88px; }
   .payouts th:nth-child(7), .payouts td:nth-child(7) { width: 152px; }
   .payouts th:nth-child(8), .payouts td:nth-child(8) { width: 96px; }
   .payouts th:nth-child(9), .payouts td:nth-child(9) { width: 80px; }

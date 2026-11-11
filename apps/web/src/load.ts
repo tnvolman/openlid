@@ -53,11 +53,16 @@ export type Renderers = {
   renderGifts: (value: Gift[]) => string;
 };
 
+/** Monotonic generation so a slower, earlier load cannot overwrite a newer Refresh. */
+let loadSeq = 0;
+
 /**
  * Fetch the four treasury endpoints and paint the page. The Refresh button is
  * disabled and labelled "Refreshing…" while this runs. Does not touch Approve/Reject.
+ * A newer load (another Refresh, or approve/reject) drops this one's paint.
  */
 export async function load(api: Api, els: PageEls, render: Renderers, now = new Date()): Promise<void> {
+  const seq = ++loadSeq;
   showError(els.error, null);
 
   const label = els.refreshBtn.textContent || "Refresh";
@@ -67,6 +72,7 @@ export async function load(api: Api, els: PageEls, render: Renderers, now = new 
 
   try {
     const results = await Promise.allSettled([api.summary(), api.heldHolds(), api.payouts(), api.gifts()]);
+    if (seq !== loadSeq) return;
     const [summary, holds, payouts, gifts] = results;
     els.summary.innerHTML = summary.status === "fulfilled" ? render.renderSummary(summary.value) : "Unavailable.";
     els.holds.innerHTML = holds.status === "fulfilled" ? render.renderHolds(holds.value) : "Unavailable.";
@@ -81,8 +87,10 @@ export async function load(api: Api, els: PageEls, render: Renderers, now = new 
     const failed = results.find((r) => r.status === "rejected");
     if (failed) showError(els.error, (failed as PromiseRejectedResult).reason);
   } catch (err) {
+    if (seq !== loadSeq) return;
     showError(els.error, err);
   } finally {
+    if (seq !== loadSeq) return;
     els.refreshBtn.disabled = false;
     els.refreshBtn.removeAttribute("aria-busy");
     els.refreshBtn.textContent = label;

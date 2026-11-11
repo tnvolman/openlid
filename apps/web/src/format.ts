@@ -4,13 +4,28 @@ import type { Fund, Gift } from "./types.ts";
 const USDC_DECIMALS = 6n;
 const USDC_SCALE = 10n ** USDC_DECIMALS;
 
-/** Format a USDC atomic-unit integer string as "1,234.50 USDC". */
+/** Format a USDC atomic-unit integer string as "1,234.50 USDC" (2 decimal places). */
 export function formatUsdc(atomic: string | undefined | null): string {
   if (atomic == null || !/^\d+$/.test(atomic)) return "—";
   const v = BigInt(atomic);
   const whole = (v / USDC_SCALE).toLocaleString("en-US");
   const frac = (v % USDC_SCALE).toString().padStart(Number(USDC_DECIMALS), "0").slice(0, 2);
   return `${whole}.${frac} USDC`;
+}
+
+/** Full 6-decimal precision, for title tooltips: "1,234.500000 USDC". */
+export function formatUsdcPrecise(atomic: string | undefined | null): string {
+  if (atomic == null || !/^\d+$/.test(atomic)) return "—";
+  const v = BigInt(atomic);
+  const whole = (v / USDC_SCALE).toLocaleString("en-US");
+  const frac = (v % USDC_SCALE).toString().padStart(Number(USDC_DECIMALS), "0");
+  return `${whole}.${frac} USDC`;
+}
+
+/** Title-case a fund tag: "missions" → "Missions". */
+export function formatFund(fund: string | null | undefined): string {
+  if (!fund) return "";
+  return fund.charAt(0).toUpperCase() + fund.slice(1);
 }
 
 /**
@@ -50,13 +65,28 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 /** ISO 8601 timestamp as a short UTC display, e.g. "11 Nov 14:05 UTC"; "—" when missing or unparseable. */
 export function formatTime(iso: string | null | undefined): string {
   if (!iso) return "—";
+  const parts = utcParts(iso);
+  if (!parts) return "—";
+  return `${parts.day} ${parts.mon} ${parts.hh}:${parts.mm} UTC`;
+}
+
+/** Date only in UTC, e.g. "11 Nov". Used in the Requested column at 1280; the time stays in a tooltip. */
+export function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const parts = utcParts(iso);
+  if (!parts) return "—";
+  return `${parts.day} ${parts.mon}`;
+}
+
+function utcParts(iso: string): { day: number; mon: string; hh: string; mm: string } | null {
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  const day = d.getUTCDate();
-  const mon = MONTHS[d.getUTCMonth()];
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${day} ${mon} ${hh}:${mm} UTC`;
+  if (Number.isNaN(d.getTime())) return null;
+  return {
+    day: d.getUTCDate(),
+    mon: MONTHS[d.getUTCMonth()]!,
+    hh: String(d.getUTCHours()).padStart(2, "0"),
+    mm: String(d.getUTCMinutes()).padStart(2, "0"),
+  };
 }
 
 /** Signed atomic-unit difference as USDC, e.g. "-9.95 USDC". */
@@ -74,5 +104,5 @@ export function friendlyError(message: string): string {
   const m = INSUFFICIENT_FUND.exec(message);
   if (!m) return message;
   const [, fund, avail, needed] = m;
-  return `Not enough in the ${fund} fund: ${formatUsdc(avail)} available, this bill needs ${formatUsdc(needed)}. Other funds cannot pay it.`;
+  return `Not enough in the ${formatFund(fund)} fund: ${formatUsdc(avail)} available, this bill needs ${formatUsdc(needed)}. Other funds cannot pay it.`;
 }
