@@ -1,8 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import { ONECLICK_STATUSES, type OneClickStatus } from './types.js';
 
-/** Request body for 1Click `POST /v0/quote` (https://docs.near-intents.org). */
+/**
+ * Request body for 1Click `POST /v0/quote` (https://docs.near-intents.org).
+ * `dry` is pinned to `true`: this build only ever asks for dry-run quotes and never gets a payable deposit address.
+ */
 export interface OneClickQuoteRequest {
-  dry: boolean;
+  dry: true;
   swapType: 'EXACT_INPUT';
   slippageTolerance: number;
   originAsset: string;
@@ -106,6 +110,7 @@ export class HttpOneClickClient implements OneClickClient {
   }
 
   async quote(req: OneClickQuoteRequest): Promise<OneClickQuoteResponse> {
+    if (req.dry !== true) throw new OneClickError('only dry-run quotes (dry: true) are allowed');
     const body = await this.send(`${this.baseUrl}/v0/quote`, {
       method: 'POST',
       headers: this.headers(true),
@@ -166,5 +171,42 @@ export function parseStatusResponse(body: unknown): OneClickStatusResponse {
     updatedAt: str(b.updatedAt),
     quoteResponse: q ? { quote: { depositAddress: str(q.depositAddress) } } : undefined,
     swapDetails: sd ? { amountIn: str(sd.amountIn), amountOut: str(sd.amountOut) } : undefined,
+  };
+}
+
+export const DRY_RUN_STUB_BASE_URL = 'http://dry-run-stub.invalid';
+
+/**
+ * Local stand-in for 1Click used when ONECLICK_API_KEY is unset ($0 demo: no paid API, no network).
+ * Plug it into HttpOneClickClient as `fetch`. It serves the dry-run shape of `POST /v0/quote`
+ * (no depositAddress, no deadline) and rejects anything that is not `dry: true`.
+ *
+ * Amounts are a 1:1 placeholder (amountOut = amountIn), which only makes sense for a 6-decimal stablecoin
+ * origin asset. It is not a price.
+ */
+export function createDryRunStubFetch(now: () => Date = () => new Date()): typeof fetch {
+  return async (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+    if (url.pathname === '/v0/quote' && init?.method === 'POST') {
+      const req = JSON.parse(String(init.body)) as OneClickQuoteRequest;
+      if (req.dry !== true) return Response.json({ message: 'dry-run stub only serves dry: true quotes' }, { status: 400 });
+      const amount = BigInt(req.amount);
+      const minAmountOut = (amount * BigInt(10_000 - req.slippageTolerance)) / 10_000n;
+      return Response.json({
+        correlationId: `stub-${randomUUID()}`,
+        signature: '',
+        timestamp: now().toISOString(),
+        quoteRequest: req,
+        quote: {
+          amountIn: req.amount,
+          amountOut: req.amount,
+          minAmountOut: minAmountOut.toString(),
+        },
+      });
+    }
+    if (url.pathname === '/v0/status') {
+      return Response.json({ message: 'dry-run stub has no deposits to report' }, { status: 404 });
+    }
+    return Response.json({ message: 'not found' }, { status: 404 });
   };
 }

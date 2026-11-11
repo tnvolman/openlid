@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createApp } from '../src/app.js';
-import { classifyNearError, ContractRejectedError, loadKeyFromFile, UnconfiguredNearClient } from '../src/near.js';
+import { classifyNearError, ContractRejectedError, loadKeyFromFile, resolveKeyFile, UnconfiguredNearClient } from '../src/near.js';
 import { HttpOneClickClient } from '../src/oneclick.js';
 import { giftBody, makeHarness } from './helpers.js';
 
@@ -144,6 +144,8 @@ describe('payouts and holds', () => {
       store: h.store,
       oneClick: new HttpOneClickClient({ baseUrl: 'https://1click.mock.invalid', fetch: h.oneClickMock.fetch }),
       near: new UnconfiguredNearClient('NEAR is not configured'),
+      settlement: h.settlement,
+      network: 'testnet',
     });
     const res = await app.request('/api/payouts/request', {
       method: 'POST',
@@ -171,16 +173,35 @@ describe('near helpers', () => {
     const dir = await mkdtemp(join(tmpdir(), 'openlid-keyfile-test-'));
     try {
       const plain = join(dir, 'agent.txt');
-      await writeFile(plain, 'ed25519:PLACEHOLDER\n');
-      assert.equal(await loadKeyFromFile(plain), 'ed25519:PLACEHOLDER');
+      await writeFile(plain, 'ed25519:FakeTestKeyStub\n');
+      assert.equal(await loadKeyFromFile(plain), 'ed25519:FakeTestKeyStub');
       const json = join(dir, 'agent.json');
-      await writeFile(json, JSON.stringify({ account_id: 'a.testnet', public_key: 'ed25519:PUB', private_key: 'ed25519:PLACEHOLDER' }));
-      assert.equal(await loadKeyFromFile(json), 'ed25519:PLACEHOLDER');
+      await writeFile(json, JSON.stringify({ account_id: 'a.testnet', public_key: 'ed25519:PUB', private_key: 'ed25519:FakeTestKeyStub' }));
+      assert.equal(await loadKeyFromFile(json), 'ed25519:FakeTestKeyStub');
       const junk = join(dir, 'junk.txt');
       await writeFile(junk, 'not a key');
       await assert.rejects(loadKeyFromFile(junk));
+
+      // Error messages name the path, never the file contents.
+      const broken = join(dir, 'broken.json');
+      await writeFile(broken, '{"private_key": "ed25519:FakeTestKeyStub", oops');
+      await assert.rejects(loadKeyFromFile(broken), (err: Error) => {
+        assert.ok(!err.message.includes('FakeTestKeyStub'), err.message);
+        assert.ok(err.message.includes(broken));
+        return true;
+      });
+      const wrongShape = join(dir, 'wrong.txt');
+      await writeFile(wrongShape, 'ed25519:Has0ForbiddenChars');
+      await assert.rejects(loadKeyFromFile(wrongShape), (err: Error) => !err.message.includes('Has0Forbidden'));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it('resolves key files from env paths or OPENLID_DEMO_KEYS_DIR/<accountId>.json only', () => {
+    assert.equal(resolveKeyFile('/keys/agent.json', '/demo', 'agent.testnet'), '/keys/agent.json');
+    assert.equal(resolveKeyFile(undefined, '/demo', 'agent.testnet'), '/demo/agent.testnet.json');
+    assert.equal(resolveKeyFile(undefined, undefined, 'agent.testnet'), undefined);
+    assert.equal(resolveKeyFile(undefined, '/demo', undefined), undefined);
   });
 });

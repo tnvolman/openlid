@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../src/app.js';
-import { ContractRejectedError, type NearContractClient, type RequestPayoutArgs } from '../src/near.js';
+import { ContractRejectedError, type NearContractClient, type RequestPayoutArgs, type TestnetSettlement } from '../src/near.js';
 import { HttpOneClickClient } from '../src/oneclick.js';
 import { JsonStore } from '../src/store.js';
 import type { HoldStatus, HoldView, OneClickStatus, PayoutView } from '../src/types.js';
@@ -18,7 +18,9 @@ export interface RecordedCall {
 
 /**
  * Mock of the 1Click HTTP API, plugged in as `fetch` for the real HttpOneClickClient.
- * Each quote pops the next queued deposit address; statuses are keyed by deposit address.
+ * Like the official dry-run shape, a quote has no depositAddress by default. Queuing an address makes the
+ * next response a non-dry-shaped fixture so matching against real addresses can still be tested.
+ * Statuses are keyed by deposit address.
  */
 export class MockOneClick {
   calls: RecordedCall[] = [];
@@ -42,7 +44,7 @@ export class MockOneClick {
         timestamp: new Date().toISOString(),
         quoteRequest: body,
         quote: {
-          ...(body.dry ? {} : { depositAddress }),
+          ...(depositAddress ? { depositAddress } : {}),
           ...(depositMemo ? { depositMemo } : {}),
           amountIn: body.amount,
           amountOut: this.quoteAmountOut,
@@ -125,7 +127,18 @@ export class FakeTreasury implements NearContractClient {
   }
 }
 
-export async function makeHarness() {
+/** Records test-FT credits instead of minting on testnet. */
+export class FakeSettlement implements TestnetSettlement {
+  credits: Array<{ giftId: string; amount: string }> = [];
+  fail?: Error;
+  async creditTreasury(args: { giftId: string; amount: string }) {
+    if (this.fail) throw this.fail;
+    this.credits.push(args);
+    return { txHash: `fake-tx-${this.credits.length}` };
+  }
+}
+
+export async function makeHarness(opts: { network?: string } = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), 'openlid-api-test-'));
   const store = new JsonStore(dataDir);
   await store.init();
@@ -136,10 +149,13 @@ export async function makeHarness() {
     fetch: oneClickMock.fetch,
   });
   const treasury = new FakeTreasury();
+  const settlement = new FakeSettlement();
   const app = createApp({
     store,
     oneClick,
     near: treasury,
+    settlement,
+    network: opts.network ?? 'testnet',
     contractId: 'treasury.openlid.testnet',
     usdcTokenId: 'usdc.fakes.testnet',
   });
@@ -166,6 +182,7 @@ export async function makeHarness() {
     dataDir,
     oneClickMock,
     treasury,
+    settlement,
     request,
     cleanup: () => rm(dataDir, { recursive: true, force: true }),
   };

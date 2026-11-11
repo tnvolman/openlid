@@ -1,5 +1,15 @@
 export const RECEIPT_NOTE = 'demo, not a tax document' as const;
 
+/** Every quote is a 1Click dry run; no payable deposit address is ever requested. */
+export const QUOTE_MODE = 'dry_run' as const;
+
+/** Prefix for API-assigned deposit addresses when the dry quote has none. Not a real chain address. */
+export const SIM_ADDRESS_PREFIX = 'sim:';
+
+export function isSimulatedAddress(addr: string): boolean {
+  return addr.startsWith(SIM_ADDRESS_PREFIX);
+}
+
 export const FUNDS = ['general', 'missions', 'building'] as const;
 export type Fund = (typeof FUNDS)[number];
 
@@ -45,8 +55,10 @@ export interface GiftRecord {
   quoteDeadline: string | null;
   status: GiftStatus;
   oneClickStatus: OneClickStatus | null;
-  /** USDC atomic units actually delivered, once settled. */
+  /** USDC (test FT) atomic units credited, once settled. */
   settledAmount: string | null;
+  /** Testnet tx hash of the simulated settlement (test FT mint), if any. */
+  settlementTxHash?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -57,6 +69,8 @@ export interface GiftView {
   donor: string;
   fund: Fund;
   depositAddress: string;
+  /** True when depositAddress is an API-assigned `sim:` address (dry quote had none). */
+  depositAddressSimulated: boolean;
   depositMemo: string | null;
   correlationId: string;
   amountIn: string;
@@ -67,8 +81,10 @@ export interface GiftView {
   status: GiftStatus;
   oneClickStatus: OneClickStatus | null;
   settledAmount: string | null;
+  settlementTxHash: string | null;
   createdAt: string;
   updatedAt: string;
+  quoteMode: typeof QUOTE_MODE;
   receiptNote: typeof RECEIPT_NOTE;
 }
 
@@ -78,6 +94,7 @@ export function toGiftView(g: GiftRecord): GiftView {
     donor: g.donor,
     fund: g.fund,
     depositAddress: g.depositAddress,
+    depositAddressSimulated: isSimulatedAddress(g.depositAddress),
     depositMemo: g.depositMemo,
     correlationId: g.correlationId,
     amountIn: g.amountIn,
@@ -88,8 +105,10 @@ export function toGiftView(g: GiftRecord): GiftView {
     status: g.status,
     oneClickStatus: g.oneClickStatus,
     settledAmount: g.settledAmount,
+    settlementTxHash: g.settlementTxHash ?? null,
     createdAt: g.createdAt,
     updatedAt: g.updatedAt,
+    quoteMode: QUOTE_MODE,
     receiptNote: RECEIPT_NOTE,
   };
 }

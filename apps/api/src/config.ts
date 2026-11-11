@@ -14,6 +14,8 @@ export interface Config {
   agentKeyFile?: string;
   oneClickBaseUrl: string;
   oneClickApiKey?: string;
+  /** Where the testnet demo writes generated keys (`<dir>/<accountId>.json`). Paths only; never read into logs. */
+  demoKeysDir?: string;
 }
 
 function opt(env: NodeJS.ProcessEnv, name: string): string | undefined {
@@ -22,8 +24,13 @@ function opt(env: NodeJS.ProcessEnv, name: string): string | undefined {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const network = opt(env, 'OPENLID_NETWORK') ?? 'testnet';
+  const network = (opt(env, 'OPENLID_NETWORK') ?? 'testnet').toLowerCase();
   if (network === 'mainnet') throw new Error('OPENLID_NETWORK=mainnet is not allowed for this demo');
+  const dryRun = opt(env, 'ONECLICK_DRY_RUN');
+  if (dryRun !== undefined && dryRun.toLowerCase() !== 'true') {
+    throw new Error('ONECLICK_DRY_RUN must be true: this build only requests 1Click dry-run quotes');
+  }
+  const demoKeysDir = opt(env, 'OPENLID_DEMO_KEYS_DIR');
   return {
     host: opt(env, 'OPENLID_API_HOST') ?? '127.0.0.1',
     port: Number(opt(env, 'OPENLID_API_PORT') ?? 8787),
@@ -37,5 +44,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     agentKeyFile: opt(env, 'OPENLID_AGENT_KEY_FILE'),
     oneClickBaseUrl: opt(env, 'ONECLICK_BASE_URL') ?? 'https://1click.chaindefuser.com',
     oneClickApiKey: opt(env, 'ONECLICK_API_KEY'),
+    demoKeysDir: demoKeysDir ? resolve(demoKeysDir) : undefined,
   };
 }

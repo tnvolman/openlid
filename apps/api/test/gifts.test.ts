@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createApp } from '../src/app.js';
-import { HttpOneClickClient } from '../src/oneclick.js';
+import { loadConfig } from '../src/config.js';
+import { UnconfiguredSettlement } from '../src/near.js';
+import { createDryRunStubFetch, DRY_RUN_STUB_BASE_URL, HttpOneClickClient, type OneClickQuoteRequest } from '../src/oneclick.js';
 import { JsonStore } from '../src/store.js';
 import { giftBody, makeHarness, TEST_API_KEY } from './helpers.js';
 
@@ -17,7 +19,7 @@ describe('gifts', () => {
   });
   afterEach(() => h.cleanup());
 
-  it('1. quote-to-gift: a mocked 1Click quote creates a gift keyed by its depositAddress; a second quote is a second gift', async () => {
+  it('1. quote-to-gift (non-dry fixture): a mocked quote with a depositAddress creates a gift keyed by it; a second quote is a second gift', async () => {
     h.oneClickMock.depositAddresses.push(ADDR_A, ADDR_B);
 
     const r1 = await h.request('POST', '/api/gifts/quote', giftBody());
@@ -25,6 +27,8 @@ describe('gifts', () => {
     assert.equal(r1.json.depositAddress, ADDR_A);
     assert.equal(r1.json.status, 'pending_deposit');
     assert.equal(r1.json.receiptNote, 'demo, not a tax document');
+    assert.equal(r1.json.quoteMode, 'dry_run');
+    assert.equal(r1.json.depositAddressSimulated, false);
     assert.equal(r1.json.fund, 'general');
     assert.equal(r1.json.donor, 'Donor A');
     assert.equal(r1.json.amountIn, '10000000');
@@ -44,7 +48,7 @@ describe('gifts', () => {
     assert.deepEqual(
       { ...call.body, deadline: typeof call.body.deadline },
       {
-        dry: false,
+        dry: true,
         swapType: 'EXACT_INPUT',
         slippageTolerance: 100,
         originAsset: giftBody().originAsset,
@@ -200,16 +204,75 @@ describe('gifts', () => {
     assert.equal((await h.request('GET', `/api/gifts/${g.id}`)).json.status, 'pending_deposit');
   });
 
-  it('rejects a quote without depositAddress (e.g. dry quote) and creates no gift', async () => {
-    // Mock returns no address when the queue is empty.
+  it('dry quote without depositAddress: each gift gets a unique sim:<id> address, matched by address only', async () => {
+    // Official dry-run shape: no depositAddress in either response.
+    const a = await h.request('POST', '/api/gifts/quote', giftBody({ donor: 'Same Amount A' }));
+    const b = await h.request('POST', '/api/gifts/quote', giftBody({ donor: 'Same Amount B' }));
+    assert.equal(a.status, 201, a.text);
+    assert.equal(b.status, 201, b.text);
+    assert.equal(a.json.depositAddress, `sim:${a.json.id}`);
+    assert.equal(b.json.depositAddress, `sim:${b.json.id}`);
+    assert.notEqual(a.json.depositAddress, b.json.depositAddress);
+    assert.equal(a.json.amountIn, b.json.amountIn, 'precondition: identical amounts');
+    assert.equal(a.json.depositAddressSimulated, true);
+    assert.equal(a.json.quoteMode, 'dry_run');
+    assert.equal(a.json.receiptNote, 'demo, not a tax document');
+    assert.ok(h.oneClickMock.calls.every((c) => c.url.pathname !== '/v0/quote' || c.body.dry === true));
+    assert.equal(h.store.findGiftByDepositAddress(`sim:${b.json.id}`)?.id, b.json.id);
+
+    // Sync on a simulated address never calls 1Click status and leaves the gift as-is.
+    const sync = await h.request('POST', `/api/gifts/${a.json.id}/sync`);
+    assert.equal(sync.status, 200);
+    assert.equal(sync.json.status, 'pending_deposit');
+    assert.equal(h.oneClickMock.calls.filter((c) => c.url.pathname === '/v0/status').length, 0);
+
+    // Settling A does not touch B even though the amounts are identical.
+    const settled = await h.request('POST', `/api/gifts/${a.json.id}/simulate-settlement`);
+    assert.equal(settled.json.status, 'settled');
+    assert.equal((await h.request('GET', `/api/gifts/${b.json.id}`)).json.status, 'pending_deposit');
+  });
+
+  it('rejects a 1Click quote that returns a reserved sim: address', async () => {
+    h.oneClickMock.depositAddresses.push('sim:spoofed');
     const r = await h.request('POST', '/api/gifts/quote', giftBody());
     assert.equal(r.status, 502);
     assert.equal((await h.request('GET', '/api/gifts')).json.gifts.length, 0);
   });
 
+  it('local dry-run stub (no ONECLICK_API_KEY): real client, dry shape, no network, refuses dry:false', async () => {
+    const client = new HttpOneClickClient({ baseUrl: DRY_RUN_STUB_BASE_URL, fetch: createDryRunStubFetch() });
+    const app = createApp({
+      store: h.store,
+      oneClick: client,
+      near: h.treasury,
+      settlement: h.settlement,
+      network: 'testnet',
+      contractId: 'treasury.openlid.testnet',
+      usdcTokenId: 'usdc.fakes.testnet',
+    });
+    const res = await app.request('/api/gifts/quote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(giftBody({ amount: '25000000' })),
+    });
+    assert.equal(res.status, 201);
+    const gift = (await res.json()) as any;
+    assert.match(gift.depositAddress, /^sim:/);
+    assert.equal(gift.quoteMode, 'dry_run');
+    assert.equal(gift.amountOut, '25000000');
+    assert.equal(gift.minAmountOut, '24750000');
+    assert.equal(gift.quoteDeadline, null);
+    assert.equal(h.oneClickMock.calls.length, 0, 'the mocked live API was never called');
+
+    // The client itself refuses a non-dry request, before any HTTP call.
+    await assert.rejects(
+      client.quote({ ...({} as OneClickQuoteRequest), dry: false as unknown as true }),
+      /dry-run/,
+    );
+  });
+
   it('dry quotes via the client have no depositAddress', async () => {
     const client = new HttpOneClickClient({ baseUrl: 'https://1click.mock.invalid', fetch: h.oneClickMock.fetch });
-    h.oneClickMock.depositAddresses.push(ADDR_A);
     const q = await client.quote({
       dry: true,
       swapType: 'EXACT_INPUT',
@@ -256,6 +319,8 @@ describe('gifts', () => {
       store: h.store,
       oneClick: new HttpOneClickClient({ baseUrl: 'https://1click.mock.invalid', fetch: h.oneClickMock.fetch }),
       near: h.treasury,
+      settlement: h.settlement,
+      network: 'testnet',
     });
     const res = await app.request('/api/gifts/quote', {
       method: 'POST',
@@ -273,5 +338,101 @@ describe('gifts', () => {
     }
     const bad = await h.request('GET', '/api/gifts', undefined, { origin: 'https://evil.example' });
     assert.notEqual(bad.headers.get('access-control-allow-origin'), 'https://evil.example');
+  });
+});
+
+describe('simulate-settlement (testnet only)', () => {
+  let h: Awaited<ReturnType<typeof makeHarness>>;
+  afterEach(() => h.cleanup());
+
+  it('happy path: credits the test FT to the treasury and marks the gift settled', async () => {
+    h = await makeHarness();
+    const g = (await h.request('POST', '/api/gifts/quote', giftBody({ fund: 'building' }))).json;
+    assert.match(g.depositAddress, /^sim:/);
+
+    const r = await h.request('POST', `/api/gifts/${g.id}/simulate-settlement`);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.status, 'settled');
+    assert.equal(r.json.settledAmount, '9950000');
+    assert.equal(r.json.settlementTxHash, 'fake-tx-1');
+    assert.equal(r.json.quoteMode, 'dry_run');
+    assert.equal(r.json.receiptNote, 'demo, not a tax document');
+    assert.deepEqual(h.settlement.credits, [{ giftId: g.id, amount: '9950000' }]);
+
+    assert.equal((await h.request('GET', '/api/gifts')).json.gifts[0].status, 'settled');
+    const summary = (await h.request('GET', '/api/summary')).json;
+    assert.deepEqual(summary.giftsByFund.building, { settledAmount: '9950000', count: 1 });
+
+    // Settling twice is refused and does not mint again.
+    const again = await h.request('POST', `/api/gifts/${g.id}/simulate-settlement`);
+    assert.equal(again.status, 409);
+    assert.equal(h.settlement.credits.length, 1);
+    // No 1Click deposit or status call was made.
+    assert.equal(h.oneClickMock.calls.filter((c) => c.url.pathname !== '/v0/quote').length, 0);
+  });
+
+  it('is refused on mainnet: 403, nothing minted, status unchanged', async () => {
+    h = await makeHarness({ network: 'mainnet' });
+    const g = (await h.request('POST', '/api/gifts/quote', giftBody())).json;
+    const r = await h.request('POST', `/api/gifts/${g.id}/simulate-settlement`);
+    assert.equal(r.status, 403);
+    assert.match(r.json.error, /mainnet/);
+    assert.equal(h.settlement.credits.length, 0);
+    assert.equal((await h.request('GET', `/api/gifts/${g.id}`)).json.status, 'pending_deposit');
+  });
+
+  it('is refused on any network other than testnet', async () => {
+    h = await makeHarness({ network: 'localnet' });
+    const g = (await h.request('POST', '/api/gifts/quote', giftBody())).json;
+    const r = await h.request('POST', `/api/gifts/${g.id}/simulate-settlement`);
+    assert.equal(r.status, 403);
+    assert.equal(h.settlement.credits.length, 0);
+  });
+
+  it('refuses gifts with a real 1Click address, and leaves status unchanged when the mint fails', async () => {
+    h = await makeHarness();
+    h.oneClickMock.depositAddresses.push('0xREAL000000000000000000000000000000000001');
+    const real = (await h.request('POST', '/api/gifts/quote', giftBody())).json;
+    assert.equal((await h.request('POST', `/api/gifts/${real.id}/simulate-settlement`)).status, 409);
+
+    const sim = (await h.request('POST', '/api/gifts/quote', giftBody())).json;
+    h.settlement.fail = new Error('rpc down');
+    const r = await h.request('POST', `/api/gifts/${sim.id}/simulate-settlement`);
+    assert.equal(r.status, 500);
+    assert.equal((await h.request('GET', `/api/gifts/${sim.id}`)).json.status, 'pending_deposit');
+    assert.equal((await h.request('POST', '/api/gifts/nope/simulate-settlement')).status, 404);
+  });
+
+  it('returns 503 when settlement is not configured', async () => {
+    h = await makeHarness();
+    const app = createApp({
+      store: h.store,
+      oneClick: new HttpOneClickClient({ baseUrl: DRY_RUN_STUB_BASE_URL, fetch: createDryRunStubFetch() }),
+      near: h.treasury,
+      settlement: new UnconfiguredSettlement('not configured'),
+      network: 'testnet',
+      contractId: 'treasury.openlid.testnet',
+      usdcTokenId: 'usdc.fakes.testnet',
+    });
+    const q = await app.request('/api/gifts/quote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(giftBody()),
+    });
+    const g = (await q.json()) as any;
+    const r = await app.request(`/api/gifts/${g.id}/simulate-settlement`, { method: 'POST' });
+    assert.equal(r.status, 503);
+  });
+});
+
+describe('config', () => {
+  it('refuses mainnet and non-dry 1Click at startup', () => {
+    assert.throws(() => loadConfig({ OPENLID_NETWORK: 'mainnet' }), /mainnet/);
+    assert.throws(() => loadConfig({ OPENLID_NETWORK: 'MAINNET' }), /mainnet/);
+    assert.throws(() => loadConfig({ ONECLICK_DRY_RUN: 'false' }), /dry-run/);
+    const c = loadConfig({ ONECLICK_DRY_RUN: 'true', OPENLID_DEMO_KEYS_DIR: '/tmp/x/.demo-keys' });
+    assert.equal(c.network, 'testnet');
+    assert.equal(c.demoKeysDir, '/tmp/x/.demo-keys');
+    assert.equal(c.oneClickApiKey, undefined);
   });
 });

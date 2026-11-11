@@ -2,14 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { ContractRejectedError, NearUnavailableError, type NearContractClient } from './near.js';
+import { ContractRejectedError, NearUnavailableError, type NearContractClient, type TestnetSettlement } from './near.js';
 import { OneClickError, type OneClickClient } from './oneclick.js';
 import { DuplicateBillIdError, DuplicateDepositAddressError, type JsonStore } from './store.js';
 import {
   FUNDS,
   HOLD_STATUSES,
   RECEIPT_NOTE,
+  SIM_ADDRESS_PREFIX,
   STATUS_MAP,
+  isSimulatedAddress,
   toGiftView,
   type Fund,
   type GiftRecord,
@@ -23,6 +25,10 @@ export interface AppDeps {
   store: JsonStore;
   oneClick: OneClickClient;
   near: NearContractClient;
+  /** Simulated cross-chain settlement (test FT mint into the treasury). Testnet only. */
+  settlement: TestnetSettlement;
+  /** OPENLID_NETWORK. simulate-settlement is refused unless this is `testnet`. */
+  network: string;
   /** Treasury contract account that receives USDC (1Click `recipient`). */
   contractId?: string;
   /** NEP-141 USDC token account; the 1Click destination asset is `nep141:<id>`. */
@@ -135,7 +141,8 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const quote = await oneClick.quote({
-      dry: false,
+      // Dry run only: no payable deposit address is requested and no deposit is ever sent.
+      dry: true,
       swapType: 'EXACT_INPUT',
       slippageTolerance,
       originAsset,
@@ -149,12 +156,16 @@ export function createApp(deps: AppDeps): Hono {
       deadline: new Date(now().getTime() + quoteTtlMs).toISOString(),
     });
 
-    const depositAddress = quote.quote.depositAddress?.trim();
-    if (!depositAddress) throw new OneClickError('1Click quote did not include a depositAddress');
+    // Official dry quotes carry no depositAddress, so the gift gets a unique simulated `sim:<id>` address.
+    // A real address is still accepted (non-dry fixtures in tests) and matched the same way: by address only.
+    const id = randomUUID();
+    const quoted = quote.quote.depositAddress?.trim();
+    if (quoted && isSimulatedAddress(quoted)) throw new OneClickError('1Click returned a reserved sim: deposit address');
+    const depositAddress = quoted || `${SIM_ADDRESS_PREFIX}${id}`;
 
     const ts = now().toISOString();
     const gift: GiftRecord = {
-      id: randomUUID(),
+      id,
       donor,
       fund: fund as Fund,
       originAsset,
@@ -171,10 +182,11 @@ export function createApp(deps: AppDeps): Hono {
       status: 'pending_deposit',
       oneClickStatus: null,
       settledAmount: null,
+      settlementTxHash: null,
       createdAt: ts,
       updatedAt: ts,
     };
-    // Throws DuplicateDepositAddressError (409) if 1Click ever hands back an address we already assigned.
+    // Throws DuplicateDepositAddressError (409) if an address (real or simulated) is already assigned.
     await store.insertGift(gift);
     return c.json(toGiftView(gift), 201);
   });
@@ -198,6 +210,9 @@ export function createApp(deps: AppDeps): Hono {
     const gift = store.getGift(c.req.param('id'));
     if (!gift) throw new HttpError(404, 'gift not found');
 
+    // Simulated addresses have nothing to poll at 1Click; status only changes via simulate-settlement.
+    if (isSimulatedAddress(gift.depositAddress)) return c.json(toGiftView(gift));
+
     // Status is looked up by this gift's deposit address only; never by amount.
     const st = await oneClick.status(gift.depositAddress, gift.depositMemo);
     const echoed = st.quoteResponse?.quote?.depositAddress;
@@ -212,6 +227,41 @@ export function createApp(deps: AppDeps): Hono {
       updatedAt: now().toISOString(),
     });
     return c.json(toGiftView(updated));
+  });
+
+  const settling = new Set<string>();
+
+  app.post('/api/gifts/:id/simulate-settlement', async (c) => {
+    if (deps.network === 'mainnet') {
+      throw new HttpError(403, 'simulate-settlement is refused on mainnet; it is a NEAR testnet demo only');
+    }
+    if (deps.network !== 'testnet') {
+      throw new HttpError(403, `simulate-settlement runs on NEAR testnet only (OPENLID_NETWORK=${deps.network})`);
+    }
+    const gift = store.getGift(c.req.param('id'));
+    if (!gift) throw new HttpError(404, 'gift not found');
+    if (!isSimulatedAddress(gift.depositAddress)) {
+      throw new HttpError(409, 'gift has a real 1Click deposit address; only sim: gifts can be settled by simulation');
+    }
+    if (gift.status !== 'pending_deposit' && gift.status !== 'processing') {
+      throw new HttpError(409, `gift is already ${gift.status}`);
+    }
+    if (settling.has(gift.id)) throw new HttpError(409, 'settlement already in progress for this gift');
+    settling.add(gift.id);
+    try {
+      const amount = gift.amountOut;
+      // Mints the test FT into the treasury contract. No 1Click deposit is involved.
+      const { txHash } = await deps.settlement.creditTreasury({ giftId: gift.id, amount });
+      const updated = await store.updateGift(gift.id, {
+        status: 'settled',
+        settledAmount: amount,
+        settlementTxHash: txHash,
+        updatedAt: now().toISOString(),
+      });
+      return c.json(toGiftView(updated));
+    } finally {
+      settling.delete(gift.id);
+    }
   });
 
   // ---- Payouts and holds ---------------------------------------------------
