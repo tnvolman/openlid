@@ -48,9 +48,35 @@ fn ctx(caller: AccountId, now: u64) {
     testing_env!(context);
 }
 
-fn init() -> Treasury {
+/// Fund that `request` bills come from. `init` credits it with `SEED`.
+const FUND: &str = "general";
+const SEED: u128 = 10 * CAP;
+
+/// Owner credits `amount` to `fund` for `gift_id`, then starts a fresh block so
+/// the `fund_credited` event does not leak into the caller's log assertions.
+fn credit(c: &mut Treasury, fund: &str, amount: u128, gift_id: &str) {
     ctx(owner(), NOV_15);
-    Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(CAP), vec![])
+    c.credit_fund(fund.into(), U128(amount), gift_id.into());
+    ctx(owner(), NOV_15);
+}
+
+fn new_treasury(initial_allowlist: Vec<AccountId>) -> Treasury {
+    ctx(owner(), NOV_15);
+    let mut c = Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(CAP), initial_allowlist);
+    credit(&mut c, FUND, SEED, "seed-gift");
+    c
+}
+
+/// Fresh treasury whose `general` fund holds `SEED`, so fund balance never
+/// gets in the way of the limit / cap / allowlist tests.
+fn init() -> Treasury {
+    new_treasury(vec![])
+}
+
+/// Fresh treasury with no fund credits.
+fn init_unfunded() -> Treasury {
+    ctx(owner(), NOV_15);
+    Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(CAP), vec![vendor()])
 }
 
 /// Contract with `vendor.near` already allowlisted (proposal + 24h + execute).
@@ -63,8 +89,12 @@ fn init_with_vendor() -> Treasury {
 }
 
 fn request(c: &mut Treasury, amount: u128, bill_id: &str) -> PromiseOrValue<String> {
+    request_from(c, amount, bill_id, FUND)
+}
+
+fn request_from(c: &mut Treasury, amount: u128, bill_id: &str, fund: &str) -> PromiseOrValue<String> {
     ctx(agent(), NOV_15 + ALLOWLIST_DELAY_NS);
-    c.request_payout(vendor(), U128(amount), bill_id.into(), format!("memo {bill_id}"))
+    c.request_payout(vendor(), U128(amount), bill_id.into(), format!("memo {bill_id}"), fund.into())
 }
 
 /// (token contract, receiver, amount, attached deposit) for every ft_transfer
@@ -164,6 +194,7 @@ fn per_bill_limit_at_limit_is_paid() {
             vendor: vendor(),
             amount: U128(LIMIT),
             memo: "memo bill-1".into(),
+            fund: "general".into(),
             status: "paid".into(),
         })
     );
@@ -187,6 +218,7 @@ fn per_bill_limit_above_limit_is_held() {
             vendor: vendor(),
             amount: U128(LIMIT + 1),
             memo: "memo bill-big".into(),
+            fund: "general".into(),
             status: "held".into(),
         })
     );
@@ -234,7 +266,7 @@ fn monthly_cap_resets_next_calendar_month() {
         c.get_month_spent(),
         MonthSpentView { year_month: "2026-12".into(), spent: U128(0), cap: U128(CAP) }
     );
-    c.request_payout(vendor(), U128(LIMIT), "dec-1".into(), "".into());
+    c.request_payout(vendor(), U128(LIMIT), "dec-1".into(), "".into(), FUND.into());
     assert_eq!(ft_transfers().len(), 1);
     assert_eq!(c.get_month_spent().spent, U128(LIMIT));
 }
@@ -301,7 +333,7 @@ fn allowlist_removed_vendor_panics() {
     c.execute_allowlist_change(vendor());
     assert!(c.get_allowlist().is_empty());
     ctx(agent(), NOV_15 + 2 * ALLOWLIST_DELAY_NS);
-    c.request_payout(vendor(), U128(1), "bill-1".into(), "".into());
+    c.request_payout(vendor(), U128(1), "bill-1".into(), "".into(), FUND.into());
 }
 
 #[test]
@@ -553,7 +585,7 @@ fn zero_amount_panics() {
 fn unauthorized_non_agent_request_payout() {
     let mut c = init_with_vendor();
     ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
-    c.request_payout(vendor(), U128(1), "bill-1".into(), "".into());
+    c.request_payout(vendor(), U128(1), "bill-1".into(), "".into(), FUND.into());
 }
 
 #[test]
@@ -561,7 +593,7 @@ fn unauthorized_non_agent_request_payout() {
 fn unauthorized_stranger_request_payout() {
     let mut c = init_with_vendor();
     ctx(stranger(), NOV_15 + ALLOWLIST_DELAY_NS);
-    c.request_payout(vendor(), U128(1), "bill-1".into(), "".into());
+    c.request_payout(vendor(), U128(1), "bill-1".into(), "".into(), FUND.into());
 }
 
 #[test]
@@ -600,11 +632,10 @@ fn unauthorized_external_callback() {
 
 #[test]
 fn initial_allowlist_is_active_immediately() {
-    ctx(owner(), NOV_15);
-    let mut c = Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(CAP), vec![vendor()]);
+    let mut c = new_treasury(vec![vendor()]);
     assert_eq!(c.get_allowlist(), vec![vendor()]);
     ctx(agent(), NOV_15);
-    c.request_payout(vendor(), U128(LIMIT), "init-auto".into(), "from init allowlist".into());
+    c.request_payout(vendor(), U128(LIMIT), "init-auto".into(), "from init allowlist".into(), FUND.into());
     assert_eq!(c.get_payout("init-auto".into()).unwrap().status, "paid");
     assert_eq!(ft_transfers().len(), 1);
 }
@@ -612,10 +643,277 @@ fn initial_allowlist_is_active_immediately() {
 #[test]
 #[should_panic(expected = "allowlist change delay has not passed")]
 fn later_allowlist_add_still_waits_24h() {
-    ctx(owner(), NOV_15);
     let other: AccountId = "other-vendor.near".parse().unwrap();
-    let mut c = Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(CAP), vec![vendor()]);
+    let mut c = new_treasury(vec![vendor()]);
     c.propose_allowlist_change(other.clone(), "add".into());
     ctx(stranger(), NOV_15);
     c.execute_allowlist_change(other);
+}
+
+// ---------- 7. per-fund accounting ----------
+
+fn fund(c: &Treasury, name: &str) -> FundView {
+    c.get_fund(name.into())
+}
+
+#[test]
+#[should_panic(expected = "fund must be one of general, missions, building")]
+fn fund_invalid_on_request_payout_panics() {
+    let mut c = init_with_vendor();
+    request_from(&mut c, 1, "bill-1", "roof");
+}
+
+#[test]
+#[should_panic(expected = "fund must be one of general, missions, building")]
+fn fund_invalid_on_credit_fund_panics() {
+    let mut c = init();
+    c.credit_fund("General".into(), U128(1), "gift-x".into());
+}
+
+#[test]
+#[should_panic(expected = "fund must be one of general, missions, building")]
+fn fund_invalid_on_get_fund_panics() {
+    init().get_fund("".into());
+}
+
+#[test]
+#[should_panic(expected = "insufficient fund balance")]
+fn fund_insufficient_refuses_auto_pay() {
+    let mut c = init_unfunded();
+    credit(&mut c, "missions", 50, "gift-m");
+    // general has plenty in other tests; here only missions has 50.
+    request_from(&mut c, 51, "bill-1", "missions");
+}
+
+#[test]
+#[should_panic(expected = "insufficient fund balance")]
+fn fund_cannot_pay_from_another_funds_gift() {
+    let mut c = init_unfunded();
+    credit(&mut c, "missions", 10 * LIMIT, "gift-m");
+    request_from(&mut c, 1, "bill-1", "building");
+}
+
+#[test]
+#[should_panic(expected = "insufficient fund balance")]
+fn fund_insufficient_refuses_hold_creation() {
+    let mut c = init_unfunded();
+    credit(&mut c, "building", 2 * LIMIT, "gift-b");
+    request_from(&mut c, 2 * LIMIT + 1, "bill-big", "building");
+}
+
+#[test]
+fn fund_exact_balance_pays_and_holds() {
+    let mut c = init_unfunded();
+    credit(&mut c, "missions", LIMIT, "gift-m");
+    credit(&mut c, "building", 3 * LIMIT, "gift-b");
+    request_from(&mut c, LIMIT, "bill-1", "missions");
+    assert_eq!(ft_transfers(), vec![(usdc(), vendor(), LIMIT, ONE_YOCTO)]);
+    let ev = events();
+    assert_eq!(ev[0]["event"], "payout_requested");
+    assert_eq!(ev[0]["data"][0]["fund"], "missions");
+
+    let out = request_from(&mut c, 3 * LIMIT, "bill-big", "building");
+    assert!(matches!(out, PromiseOrValue::Value(ref s) if s == "held"));
+    let ev = events();
+    assert_eq!(event_names(), vec!["payout_requested", "payout_held"]);
+    assert_eq!(ev[0]["data"][0]["fund"], "building");
+    assert_eq!(ev[1]["data"][0]["fund"], "building");
+    assert_eq!(c.get_hold("bill-big".into()).unwrap().fund, "building");
+    assert_eq!(c.get_payout("bill-1".into()).unwrap().fund, "missions");
+}
+
+#[test]
+#[should_panic(expected = "insufficient fund balance")]
+fn fund_approve_hold_blocked_when_fund_used_since_hold() {
+    let mut c = init_unfunded();
+    credit(&mut c, "building", 3 * LIMIT, "gift-b");
+    request_from(&mut c, 2 * LIMIT, "roof", "building"); // held, 3,000 still available
+    assert_eq!(fund(&c, "building").available, U128(3 * LIMIT));
+    // Two routine bills drain the fund to 1,000 before the treasurer approves.
+    request_from(&mut c, LIMIT, "b1", "building");
+    request_from(&mut c, LIMIT, "b2", "building");
+    assert_eq!(fund(&c, "building").available, U128(LIMIT));
+    ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
+    c.approve_hold("roof".into());
+}
+
+#[test]
+fn fund_approve_blocked_leaves_hold_held_after_more_credit_it_pays() {
+    let mut c = init_unfunded();
+    credit(&mut c, "building", 2 * LIMIT, "gift-b1");
+    request_from(&mut c, 2 * LIMIT, "roof", "building");
+    request_from(&mut c, LIMIT, "b1", "building");
+    // A later gift tops the fund back up; approval now succeeds.
+    credit(&mut c, "building", LIMIT, "gift-b2");
+    ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
+    c.approve_hold("roof".into());
+    assert_eq!(ft_transfers(), vec![(usdc(), vendor(), 2 * LIMIT, ONE_YOCTO)]);
+    assert_eq!(
+        fund(&c, "building"),
+        FundView {
+            fund: "building".into(),
+            received: U128(3 * LIMIT),
+            paid: U128(3 * LIMIT),
+            available: U128(0),
+            held: U128(0),
+        }
+    );
+}
+
+#[test]
+fn fund_ledger_math_received_paid_available_held() {
+    let mut c = init_unfunded();
+    assert!(c.get_fund_ledger().iter().all(|f| f.received.0 == 0 && f.available.0 == 0));
+
+    ctx(owner(), NOV_15);
+    c.credit_fund("missions".into(), U128(5 * LIMIT), "gift-1".into());
+    let ev = events();
+    assert_eq!(event_names(), vec!["fund_credited"]);
+    assert_eq!(ev[0]["data"][0]["fund"], "missions");
+    assert_eq!(ev[0]["data"][0]["amount"], (5 * LIMIT).to_string());
+    assert_eq!(ev[0]["data"][0]["gift_id"], "gift-1");
+    assert_eq!(ev[0]["data"][0]["received"], (5 * LIMIT).to_string());
+    credit(&mut c, "missions", LIMIT, "gift-2");
+    credit(&mut c, "general", 7, "gift-3");
+
+    request_from(&mut c, LIMIT, "paid-1", "missions");
+    request_from(&mut c, 2 * LIMIT, "held-1", "missions");
+    request_from(&mut c, 3 * LIMIT, "held-2", "missions");
+    ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
+    c.reject_hold("held-2".into());
+
+    assert_eq!(
+        c.get_fund_ledger(),
+        vec![
+            FundView { fund: "general".into(), received: U128(7), paid: U128(0), available: U128(7), held: U128(0) },
+            FundView {
+                fund: "missions".into(),
+                received: U128(6 * LIMIT),
+                paid: U128(LIMIT),
+                // Holds are shown but do not reduce available.
+                available: U128(5 * LIMIT),
+                held: U128(2 * LIMIT),
+            },
+            FundView { fund: "building".into(), received: U128(0), paid: U128(0), available: U128(0), held: U128(0) },
+        ]
+    );
+
+    ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
+    c.approve_hold("held-1".into());
+    let m = fund(&c, "missions");
+    assert_eq!((m.paid, m.available, m.held), (U128(3 * LIMIT), U128(3 * LIMIT), U128(0)));
+}
+
+#[test]
+fn fund_reject_hold_does_not_change_ledger() {
+    let mut c = init_unfunded();
+    credit(&mut c, "general", 3 * LIMIT, "gift-g");
+    request_from(&mut c, 2 * LIMIT, "big", "general");
+    ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
+    c.reject_hold("big".into());
+    let g = fund(&c, "general");
+    assert_eq!((g.received, g.paid, g.available, g.held), (U128(3 * LIMIT), U128(0), U128(3 * LIMIT), U128(0)));
+}
+
+#[test]
+#[should_panic(expected = "unauthorized: caller is not owner")]
+fn credit_fund_rejects_agent() {
+    let mut c = init();
+    ctx(agent(), NOV_15);
+    c.credit_fund("general".into(), U128(1), "gift-1".into());
+}
+
+#[test]
+#[should_panic(expected = "unauthorized: caller is not owner")]
+fn credit_fund_rejects_stranger() {
+    let mut c = init();
+    ctx(stranger(), NOV_15);
+    c.credit_fund("general".into(), U128(1), "gift-1".into());
+}
+
+#[test]
+#[should_panic(expected = "duplicate gift_id")]
+fn credit_fund_duplicate_gift_id_panics() {
+    let mut c = init();
+    c.credit_fund("general".into(), U128(1), "gift-1".into());
+    // A retry, even into another fund, must not double-count.
+    c.credit_fund("missions".into(), U128(1), "gift-1".into());
+}
+
+#[test]
+fn credit_fund_seed_gift_id_is_taken() {
+    let mut c = init();
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.credit_fund("general".into(), U128(1), "seed-gift".into());
+    }));
+    assert!(r.is_err());
+    assert_eq!(fund(&c, "general").received, U128(SEED));
+}
+
+#[test]
+#[should_panic(expected = "amount must be > 0")]
+fn credit_fund_zero_amount_panics() {
+    let mut c = init();
+    c.credit_fund("general".into(), U128(0), "gift-1".into());
+}
+
+#[test]
+#[should_panic(expected = "gift_id must be non-empty")]
+fn credit_fund_empty_gift_id_panics() {
+    let mut c = init();
+    c.credit_fund("general".into(), U128(1), "".into());
+}
+
+#[test]
+fn fund_list_holds_and_payout_view_include_fund() {
+    let mut c = init_unfunded();
+    credit(&mut c, "building", 10 * LIMIT, "gift-b");
+    request_from(&mut c, 2 * LIMIT, "roof", "building");
+    request_from(&mut c, 10, "nails", "building");
+    let holds = c.list_holds(None);
+    assert_eq!(holds.len(), 1);
+    assert_eq!(holds[0].fund, "building");
+    assert_eq!(
+        c.get_payout("nails".into()),
+        Some(PayoutView {
+            bill_id: "nails".into(),
+            vendor: vendor(),
+            amount: U128(10),
+            memo: "memo nails".into(),
+            fund: "building".into(),
+            status: "paid".into(),
+        })
+    );
+    let ev = run_transfer_callback(&mut c, "nails", 10, false, PromiseResult::Successful(vec![]));
+    assert_eq!(ev, "paid");
+    let ex = events();
+    assert_eq!(ex[0]["event"], "payout_executed");
+    assert_eq!(ex[0]["data"][0]["fund"], "building");
+}
+
+#[test]
+fn fund_failed_direct_transfer_restores_paid() {
+    let mut c = init_unfunded();
+    credit(&mut c, "missions", LIMIT, "gift-m");
+    request_from(&mut c, LIMIT, "bill-1", "missions");
+    assert_eq!(fund(&c, "missions").available, U128(0));
+    let status = run_transfer_callback(&mut c, "bill-1", LIMIT, false, PromiseResult::Failed);
+    assert_eq!(status, "transfer_failed");
+    let m = fund(&c, "missions");
+    assert_eq!((m.paid, m.available), (U128(0), U128(LIMIT)));
+}
+
+#[test]
+fn fund_failed_hold_transfer_restores_paid_and_held() {
+    let mut c = init_unfunded();
+    credit(&mut c, "building", 3 * LIMIT, "gift-b");
+    request_from(&mut c, 3 * LIMIT, "roof", "building");
+    ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
+    c.approve_hold("roof".into());
+    let b = fund(&c, "building");
+    assert_eq!((b.paid, b.available, b.held), (U128(3 * LIMIT), U128(0), U128(0)));
+    run_transfer_callback(&mut c, "roof", 3 * LIMIT, true, PromiseResult::Failed);
+    let b = fund(&c, "building");
+    assert_eq!((b.paid, b.available, b.held), (U128(0), U128(3 * LIMIT), U128(3 * LIMIT)));
+    assert_eq!(c.get_hold("roof".into()).unwrap().status, "held");
 }

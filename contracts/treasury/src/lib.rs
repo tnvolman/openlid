@@ -5,11 +5,14 @@
 //! Holds USDC (NEP-141) for a church and pays allowlisted vendors under an
 //! on-chain policy: a per-bill limit, a calendar-month (UTC) cap, a vendor
 //! allowlist with a 24 hour change delay, and treasurer holds for bills over
-//! the per-bill limit. See `INTERFACES.md` at the repo root for the contract.
+//! the per-bill limit. Every bill names a fund (`general`, `missions`,
+//! `building`) and can only be paid from that fund's ledger balance, which the
+//! owner credits per settled gift with `credit_fund`. See `INTERFACES.md` at
+//! the repo root for the contract.
 
 use near_sdk::json_types::{U128, U64};
 use near_sdk::serde_json::{self, json};
-use near_sdk::store::{IterableMap, LookupMap};
+use near_sdk::store::{IterableMap, LookupMap, LookupSet};
 use near_sdk::{
     env, ext_contract, near, require, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault,
     Promise, PromiseError, PromiseOrValue,
@@ -39,6 +42,11 @@ pub const ACTION_REMOVE: &str = "remove";
 
 pub const REASON_OVER_PER_BILL_LIMIT: &str = "over_per_bill_limit";
 
+/// The only funds a gift or bill may name.
+pub const FUNDS: [&str; 3] = ["general", "missions", "building"];
+pub const ERR_INVALID_FUND: &str = "fund must be one of general, missions, building";
+pub const ERR_INSUFFICIENT_FUND: &str = "insufficient fund balance";
+
 #[ext_contract(ext_ft)]
 #[allow(dead_code)]
 trait FungibleToken {
@@ -52,6 +60,8 @@ enum StorageKey {
     Proposals,
     Payouts,
     Holds,
+    FundLedger,
+    CreditedGifts,
 }
 
 #[near(serializers = [borsh])]
@@ -91,6 +101,7 @@ pub struct Payout {
     pub vendor: AccountId,
     pub amount: u128,
     pub memo: String,
+    pub fund: String,
 }
 
 #[near(serializers = [borsh])]
@@ -126,7 +137,24 @@ pub struct Hold {
     pub vendor: AccountId,
     pub amount: u128,
     pub memo: String,
+    pub fund: String,
     pub status: HoldStatus,
+}
+
+/// Per-fund ledger. `received` is credited by the owner per settled gift;
+/// `paid` grows with every successful payout from the fund.
+#[near(serializers = [borsh])]
+#[derive(Clone, Debug, Default)]
+pub struct FundLedger {
+    pub received: u128,
+    pub paid: u128,
+}
+
+impl FundLedger {
+    /// `received - paid`, never negative.
+    pub fn available(&self) -> u128 {
+        self.received.saturating_sub(self.paid)
+    }
 }
 
 // ---------- views ----------
@@ -156,6 +184,7 @@ pub struct PayoutView {
     pub vendor: AccountId,
     pub amount: U128,
     pub memo: String,
+    pub fund: String,
     pub status: String,
 }
 
@@ -166,7 +195,20 @@ pub struct HoldView {
     pub vendor: AccountId,
     pub amount: U128,
     pub memo: String,
+    pub fund: String,
     pub status: String,
+}
+
+/// `available = received - paid`. `held` (outstanding holds) is shown but does
+/// not reduce `available`; approving a hold re-checks `available`.
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundView {
+    pub fund: String,
+    pub received: U128,
+    pub paid: U128,
+    pub available: U128,
+    pub held: U128,
 }
 
 #[near(serializers = [json])]
@@ -195,6 +237,10 @@ pub struct Treasury {
     /// Calendar month (`YYYY-MM`, UTC) that `month_spent` belongs to.
     spent_month: String,
     month_spent: u128,
+    /// Fund name -> ledger. Only the names in `FUNDS` are ever stored.
+    fund_ledger: LookupMap<String, FundLedger>,
+    /// Gift ids already credited, so a retried `credit_fund` cannot double-count.
+    credited_gifts: LookupSet<String>,
 }
 
 #[near]
@@ -223,6 +269,8 @@ impl Treasury {
             holds: IterableMap::new(StorageKey::Holds),
             spent_month: year_month_from_ns(env::block_timestamp()),
             month_spent: 0,
+            fund_ledger: LookupMap::new(StorageKey::FundLedger),
+            credited_gifts: LookupSet::new(StorageKey::CreditedGifts),
         };
         // Initial vendors are part of deploy-time configuration, not a later
         // "change": they are active immediately. Subsequent add/remove still
@@ -239,15 +287,18 @@ impl Treasury {
     /// Agent only. Pays immediately, creates a hold, or panics. Returns `"held"`
     /// for a hold; for a payment returns the ft_transfer promise, resolved to
     /// `"paid"` (or `"transfer_failed"` if the token rejected the transfer, in
-    /// which case the payout and cap usage are rolled back).
+    /// which case the payout, cap usage and fund `paid` are rolled back).
+    /// Both paths require `amount <= available` for `fund`.
     pub fn request_payout(
         &mut self,
         vendor: AccountId,
         amount: U128,
         bill_id: String,
         memo: String,
+        fund: String,
     ) -> PromiseOrValue<String> {
         self.assert_agent();
+        assert_fund(&fund);
         require!(!bill_id.is_empty(), "bill_id must be non-empty");
         require!(amount.0 > 0, "amount must be > 0");
         require!(
@@ -263,22 +314,30 @@ impl Treasury {
             self.monthly_cap,
         );
 
+        if let PayoutDecision::Reject(reason) = decision {
+            env::panic_str(reason.message());
+        }
+        // A hold that the fund already cannot cover is refused too.
+        self.assert_fund_covers(&fund, amount.0);
+        emit(
+            "payout_requested",
+            json!({ "bill_id": bill_id, "vendor": vendor, "amount": amount, "memo": memo, "fund": fund }),
+        );
+
         match decision {
             PayoutDecision::Pay => {
-                emit(
-                    "payout_requested",
-                    json!({ "bill_id": bill_id, "vendor": vendor, "amount": amount, "memo": memo }),
-                );
-                PromiseOrValue::Promise(self.pay(bill_id, vendor, amount.0, memo, false))
+                PromiseOrValue::Promise(self.pay(bill_id, vendor, amount.0, memo, fund, false))
             }
             PayoutDecision::Hold => {
-                emit(
-                    "payout_requested",
-                    json!({ "bill_id": bill_id, "vendor": vendor, "amount": amount, "memo": memo }),
-                );
                 self.holds.insert(
                     bill_id.clone(),
-                    Hold { vendor: vendor.clone(), amount: amount.0, memo, status: HoldStatus::Held },
+                    Hold {
+                        vendor: vendor.clone(),
+                        amount: amount.0,
+                        memo,
+                        fund: fund.clone(),
+                        status: HoldStatus::Held,
+                    },
                 );
                 emit(
                     "payout_held",
@@ -286,18 +345,20 @@ impl Treasury {
                         "bill_id": bill_id,
                         "vendor": vendor,
                         "amount": amount,
+                        "fund": fund,
                         "reason": REASON_OVER_PER_BILL_LIMIT,
                     }),
                 );
                 PromiseOrValue::Value(STATUS_HELD.to_string())
             }
-            PayoutDecision::Reject(reason) => env::panic_str(reason.message()),
+            PayoutDecision::Reject(_) => unreachable!("rejected above"),
         }
     }
 
-    /// Owner only. Re-checks the monthly cap and that the vendor is still
-    /// active on the allowlist, then transfers, marks the hold `approved`
-    /// and records a `paid` payout.
+    /// Owner only. Re-checks the monthly cap, that the vendor is still active
+    /// on the allowlist, and that the hold's fund still has `amount` available
+    /// (another payout may have used it since), then transfers, marks the hold
+    /// `approved` and records a `paid` payout.
     pub fn approve_hold(&mut self, bill_id: String) -> Promise {
         self.assert_owner();
         let mut hold = self.held(&bill_id);
@@ -310,14 +371,40 @@ impl Treasury {
             policy::fits_cap(self.current_month_spent(), hold.amount, self.monthly_cap),
             "monthly cap exceeded"
         );
+        self.assert_fund_covers(&hold.fund, hold.amount);
         hold.status = HoldStatus::Approved;
-        let (vendor, amount, memo) = (hold.vendor.clone(), hold.amount, hold.memo.clone());
+        let (vendor, amount, memo, fund) =
+            (hold.vendor.clone(), hold.amount, hold.memo.clone(), hold.fund.clone());
         self.holds.insert(bill_id.clone(), hold);
         emit("hold_approved", json!({ "bill_id": bill_id }));
-        self.pay(bill_id, vendor, amount, memo, true)
+        self.pay(bill_id, vendor, amount, memo, fund, true)
     }
 
-    /// Owner only. Marks the hold `rejected`. No transfer, no cap usage.
+    /// Owner only. Records `amount` received into `fund` for settled gift
+    /// `gift_id`. Ledger only: no NEP-141 tokens move here. The caller must
+    /// already have credited the treasury's token balance (testnet demo: the
+    /// test-FT `mint`). Each `gift_id` can be credited once.
+    pub fn credit_fund(&mut self, fund: String, amount: U128, gift_id: String) {
+        self.assert_owner();
+        assert_fund(&fund);
+        require!(amount.0 > 0, "amount must be > 0");
+        require!(!gift_id.is_empty(), "gift_id must be non-empty");
+        require!(self.credited_gifts.insert(gift_id.clone()), "duplicate gift_id: gift already credited");
+        let mut ledger = self.ledger(&fund);
+        ledger.received = ledger
+            .received
+            .checked_add(amount.0)
+            .unwrap_or_else(|| env::panic_str("fund received overflow"));
+        let received = ledger.received;
+        self.fund_ledger.insert(fund.clone(), ledger);
+        emit(
+            "fund_credited",
+            json!({ "fund": fund, "amount": amount, "gift_id": gift_id, "received": U128(received) }),
+        );
+    }
+
+    /// Owner only. Marks the hold `rejected`. No transfer, no cap usage, no
+    /// fund ledger change.
     pub fn reject_hold(&mut self, bill_id: String) {
         self.assert_owner();
         let mut hold = self.held(&bill_id);
@@ -378,8 +465,8 @@ impl Treasury {
     }
 
     /// Resolves the ft_transfer started by `request_payout` / `approve_hold`.
-    /// On failure, undoes the payout record and cap usage (and returns an
-    /// approved hold to `held`).
+    /// On failure, undoes the payout record, cap usage and fund `paid` (and
+    /// returns an approved hold to `held`).
     #[private]
     pub fn on_payout_transfer(
         &mut self,
@@ -403,12 +490,17 @@ impl Treasury {
                         "bill_id": bill_id,
                         "vendor": payout.vendor,
                         "amount": U128(payout.amount),
+                        "fund": payout.fund,
                     }),
                 );
             }
             return STATUS_PAID.to_string();
         }
-        self.payouts.remove(&bill_id);
+        if let Some(payout) = self.payouts.remove(&bill_id) {
+            let mut ledger = self.ledger(&payout.fund);
+            ledger.paid = ledger.paid.saturating_sub(payout.amount);
+            self.fund_ledger.insert(payout.fund, ledger);
+        }
         if self.spent_month == year_month {
             self.month_spent = self.month_spent.saturating_sub(amount.0);
         }
@@ -452,6 +544,7 @@ impl Treasury {
             vendor: p.vendor.clone(),
             amount: U128(p.amount),
             memo: p.memo.clone(),
+            fund: p.fund.clone(),
             status: STATUS_PAID.to_string(),
         })
     }
@@ -467,6 +560,19 @@ impl Treasury {
             .filter(|(_, h)| filter.as_ref().map_or(true, |s| &h.status == s))
             .map(|(id, h)| hold_view(id, h))
             .collect()
+    }
+
+    /// Ledger for one fund. Panics on an unknown fund name.
+    pub fn get_fund(&self, fund: String) -> FundView {
+        assert_fund(&fund);
+        let held = self.held_by_fund();
+        self.fund_view(&fund, &held)
+    }
+
+    /// Ledgers for all funds, in `FUNDS` order.
+    pub fn get_fund_ledger(&self) -> Vec<FundView> {
+        let held = self.held_by_fund();
+        FUNDS.iter().map(|f| self.fund_view(f, &held)).collect()
     }
 
     pub fn get_month_spent(&self) -> MonthSpentView {
@@ -496,6 +602,42 @@ impl Treasury {
         }
     }
 
+    fn ledger(&self, fund: &str) -> FundLedger {
+        self.fund_ledger.get(fund).cloned().unwrap_or_default()
+    }
+
+    fn assert_fund_covers(&self, fund: &str, amount: u128) {
+        let available = self.ledger(fund).available();
+        if amount > available {
+            env::panic_str(&format!(
+                "{ERR_INSUFFICIENT_FUND}: {fund} has {available} available, bill needs {amount}"
+            ));
+        }
+    }
+
+    /// Outstanding (`held`) hold amounts per fund, in `FUNDS` order.
+    fn held_by_fund(&self) -> [u128; 3] {
+        let mut held = [0u128; 3];
+        for (_, h) in self.holds.iter().filter(|(_, h)| h.status == HoldStatus::Held) {
+            if let Some(i) = FUNDS.iter().position(|f| *f == h.fund) {
+                held[i] = held[i].saturating_add(h.amount);
+            }
+        }
+        held
+    }
+
+    fn fund_view(&self, fund: &str, held: &[u128; 3]) -> FundView {
+        let ledger = self.ledger(fund);
+        let i = FUNDS.iter().position(|f| *f == fund).unwrap_or_else(|| env::panic_str(ERR_INVALID_FUND));
+        FundView {
+            fund: fund.to_string(),
+            received: U128(ledger.received),
+            paid: U128(ledger.paid),
+            available: U128(ledger.available()),
+            held: U128(held[i]),
+        }
+    }
+
     fn held(&self, bill_id: &str) -> Hold {
         let hold = self
             .holds
@@ -506,13 +648,15 @@ impl Treasury {
         hold
     }
 
-    /// Records a `paid` payout, consumes cap, and starts the USDC transfer.
+    /// Records a `paid` payout, consumes cap and fund balance, and starts the
+    /// USDC transfer. Callers have already checked policy and fund balance.
     fn pay(
         &mut self,
         bill_id: String,
         vendor: AccountId,
         amount: u128,
         memo: String,
+        fund: String,
         from_hold: bool,
     ) -> Promise {
         let year_month = year_month_from_ns(env::block_timestamp());
@@ -521,10 +665,10 @@ impl Treasury {
         self.month_spent = spent
             .checked_add(amount)
             .unwrap_or_else(|| env::panic_str("monthly cap exceeded"));
-        self.payouts.insert(
-            bill_id.clone(),
-            Payout { vendor: vendor.clone(), amount, memo: memo.clone() },
-        );
+        let mut ledger = self.ledger(&fund);
+        ledger.paid = ledger.paid.checked_add(amount).unwrap_or_else(|| env::panic_str("fund paid overflow"));
+        self.fund_ledger.insert(fund.clone(), ledger);
+        self.payouts.insert(bill_id.clone(), Payout { vendor: vendor.clone(), amount, memo, fund });
         ext_ft::ext(self.usdc_token.clone())
             .with_attached_deposit(ONE_YOCTO)
             .with_static_gas(GAS_FOR_FT_TRANSFER)
@@ -543,8 +687,13 @@ fn hold_view(bill_id: &str, h: &Hold) -> HoldView {
         vendor: h.vendor.clone(),
         amount: U128(h.amount),
         memo: h.memo.clone(),
+        fund: h.fund.clone(),
         status: h.status.as_str().to_string(),
     }
+}
+
+fn assert_fund(fund: &str) {
+    require!(FUNDS.contains(&fund), ERR_INVALID_FUND);
 }
 
 /// Emits a NEP-297 event under the `openlid` standard.
