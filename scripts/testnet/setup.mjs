@@ -24,7 +24,12 @@ import { Account, JsonRpcProvider, KeyPair, KeyPairSigner, nearToYocto } from "n
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const KEYS_DIR = resolve(ROOT, process.env.OPENLID_DEMO_KEYS_DIR || ".demo-keys");
-const RPC = process.env.NEAR_TESTNET_RPC || "https://rpc.testnet.near.org";
+// Same default as the API (OPENLID_NEAR_RPC_URL): the official rpc.testnet.near.org is deprecated
+// and answers HTTP 429. NEAR_TESTNET_RPC is still honored as a fallback name.
+const RPC =
+  (process.env.OPENLID_NEAR_RPC_URL || "").trim() ||
+  (process.env.NEAR_TESTNET_RPC || "").trim() ||
+  "https://rpc.testnet.fastnear.com";
 const FAUCET = process.env.NEAR_TESTNET_FAUCET || "https://helper.nearprotocol.com/account";
 const STATE_FILE = join(KEYS_DIR, "state.json");
 const EXPLORER = "https://testnet.nearblocks.io/txns/";

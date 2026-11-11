@@ -46,7 +46,7 @@ Toolchain:
 - Node 22 (22.18 or newer; the web tests use Node's built-in TypeScript stripping)
 - Rust (stable) with the wasm target: `rustup target add wasm32-unknown-unknown`
 - `curl`, `git`, and `bash` for the demo script
-- Internet access to a NEAR testnet RPC and the free testnet faucet. The API defaults to `https://rpc.testnet.fastnear.com`; override with `OPENLID_NEAR_RPC_URL`. The official `rpc.testnet.near.org` is deprecated and currently answers HTTP 429. `scripts/testnet/setup.mjs` still defaults to it; set `NEAR_TESTNET_RPC` (for example to the FastNear URL) if setup hits 429.
+- Internet access to a NEAR testnet RPC and the free testnet faucet. The API defaults to `https://rpc.testnet.fastnear.com`; override with `OPENLID_NEAR_RPC_URL`. The official `rpc.testnet.near.org` is deprecated and currently answers HTTP 429. `scripts/testnet/setup.mjs` uses the same `OPENLID_NEAR_RPC_URL` and FastNear default (`NEAR_TESTNET_RPC` is still accepted as a fallback).
 
 Config:
 

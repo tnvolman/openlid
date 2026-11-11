@@ -25,8 +25,9 @@
 #      a bill from its own fund's balance.
 #   6. Start the treasurer page on http://127.0.0.1:5173.
 #
-# Prerequisites: Node >= 22.18, npm, curl, git; internet access to
-# rpc.testnet.near.org and the testnet faucet; built contract wasm for
+# Prerequisites: Node >= 22.18, npm, curl, git; internet access to a NEAR
+# testnet RPC (default rpc.testnet.fastnear.com; override with
+# OPENLID_NEAR_RPC_URL) and the testnet faucet; built contract wasm for
 # contracts/treasury and contracts/test-ft; apps/api present.
 #
 # Usage:
