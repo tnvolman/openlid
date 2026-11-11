@@ -14,6 +14,7 @@ import {
   FUND_RESTRICTION,
   FUND_SILO_NOTE,
   RECEIPT_NOTE,
+  RECON_NOTE,
   TESTNET_NOTICE,
 } from "./types.ts";
 
@@ -249,6 +250,23 @@ describe("cash vs fund ledgers (B3)", () => {
     assert.match(html, /data-recon="mismatch" role="alert"><strong>Mismatch:<\/strong> treasury cash differs from the fund ledgers by 9\.95 USDC/);
     const short = renderSummary(summarize(fixtureState(), "200000000"));
     assert.match(short, /differs from the fund ledgers by -30\.00 USDC/);
+  });
+
+  it("the reconciliation line and its amount-check note are always visible: match, mismatch, unknown, or missing", () => {
+    const base = summarize(fixtureState());
+    const cases = [
+      ["match", base],
+      ["mismatch", summarize(fixtureState(), "1")],
+      ["unknown", { ...base, treasuryBalance: null, reconciliation: { ...base.reconciliation!, cash: null, difference: null, status: "unknown" as const } }],
+      ["unknown", { ...base, reconciliation: undefined }],
+    ] as const;
+    for (const [status, s] of cases) {
+      const html = renderSummary(s);
+      assert.match(html, new RegExp(`data-recon="${status}"`), status);
+      assert.ok(html.includes(RECON_NOTE), status);
+    }
+    assert.match(renderSummary(base), /<p class="recon recon-match" data-recon="match">Cash matches the fund ledgers\.<\/p>/);
+    assert.match(RECON_NOTE, /not checked on-chain/);
   });
 
   it("unknown cash is said plainly, not hidden", () => {

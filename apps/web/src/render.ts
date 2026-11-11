@@ -1,5 +1,5 @@
 import { countByStatus, escapeHtml as e, formatSignedUsdc, formatTime, formatUsdc, groupGiftsByFund } from "./format.ts";
-import { AMOUNT_CAPTION, FUND_RESTRICTION, FUND_SILO_NOTE, FUNDS } from "./types.ts";
+import { AMOUNT_CAPTION, FUND_RESTRICTION, FUND_SILO_NOTE, FUNDS, RECON_NOTE } from "./types.ts";
 import { isSimulatedAddress } from "./types.ts";
 import type { Gift, HoldView, PayoutView, Summary } from "./types.ts";
 
@@ -32,13 +32,18 @@ export function renderSummary(s: Summary): string {
      · Holds outstanding: <strong>${s.holds.heldCount}</strong> (${formatUsdc(s.holds.heldAmount)})</p>`;
 }
 
-/** Live cash next to the sum of fund ledgers, with a visible flag when they differ. */
+/**
+ * Live cash next to the sum of fund ledgers, with a match / mismatch / unknown line that is ALWAYS shown:
+ * credit_fund amounts are owner-entered and not checked on-chain, so this line is the only catch.
+ */
 export function renderReconciliation(s: Summary): string {
   const r = s.reconciliation;
   const cash = s.treasuryBalance ?? r?.cash ?? null;
   const parts: string[] = [];
   if (cash != null) parts.push(`<p class="balance">Treasury balance (live, on-chain): <strong>${formatUsdc(cash)}</strong></p>`);
-  if (r) {
+  if (!r) {
+    parts.push(`<p class="recon recon-unknown" data-recon="unknown">Cash vs fund ledgers was not reported by the API, so it is not checked.</p>`);
+  } else {
     parts.push(
       `<p class="ledger-total">Sum of fund ledgers (received − paid, ${r.ledgerSource === "chain" ? "on-chain" : "API records"}): <strong>${formatUsdc(r.ledgerTotal)}</strong></p>`,
     );
@@ -52,6 +57,7 @@ export function renderReconciliation(s: Summary): string {
       parts.push(`<p class="recon recon-unknown" data-recon="unknown">Cash could not be read, so cash vs fund ledgers is not checked.</p>`);
     }
   }
+  parts.push(`<p class="note">${e(RECON_NOTE)}</p>`);
   return parts.join("\n");
 }
 

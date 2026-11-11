@@ -111,6 +111,10 @@ export const BOUNDARY_LINES = [
   "OpenLid never holds or moves donor funds for someone else: gifts go to a treasury the church controls. A legal review is required before any real money. This demo is testnet only; no real funds.",
 ] as const;
 
+/** Shown under the cash-vs-ledger line, always. */
+export const RECON_NOTE =
+  "Fund credits are entered by the owner and are not checked on-chain against the tokens received; this cash-vs-ledger line is the check.";
+
 /** Label for every USD/USDC amount on the page and in the CSV. */
 export const BOOK_VALUE_LABEL = "book value at receipt";
 export const AMOUNT_CAPTION = "USDC amounts are book value at receipt (church books only), not a deductible value.";
