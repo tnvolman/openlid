@@ -14,9 +14,9 @@ code, .mono { font-family: var(--font-mono); font-size: 13px; font-variant-numer
 
 /* Header: color lockup, endorser, quiet demo pill */
 .site-header { border-bottom: 1px solid var(--line); }
-.bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 76px; }
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 88px; }
 .brand { position: relative; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
-.lockup { display: block; height: 28px; width: auto; }
+.lockup { display: block; height: 44px; width: auto; }
 /* Visually hidden label keeps the existing wordmark text for screen readers and tests */
 .wordmark {
   position: absolute;
@@ -128,8 +128,8 @@ th.actions { text-align: right; }
 /* Phone */
 @media (max-width: 700px) {
   .wrap { padding: 0 20px; }
-  .bar { height: 68px; }
-  .lockup { height: 24px; }
+  .bar { height: 76px; }
+  .lockup { height: 36px; }
   .receipt-note { font-size: 11px; padding: 3px 8px; }
   .page-head { margin-top: 28px; }
   h1 { font-size: 28px; }
