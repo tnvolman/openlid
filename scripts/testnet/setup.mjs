@@ -85,6 +85,56 @@ async function waitForAccount(id, seconds = 60) {
   fail(`account ${id} did not appear on testnet after ${seconds}s`);
 }
 
+
+async function accountAmount(id) {
+  const a = await provider.viewAccount({ accountId: id });
+  return BigInt(a.amount);
+}
+
+async function createFaucetAccount() {
+  const id = `openlid-fund-${Date.now().toString(36)}.testnet`;
+  const kp = newKeyFile(id);
+  log(`requesting extra testnet NEAR via faucet account ${id}`);
+  const res = await fetch(FAUCET, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ newAccountId: id, newAccountPublicKey: kp.getPublicKey().toString() }),
+  }).catch((e) => fail(`faucet unreachable: ${e.message}`));
+  if (!res.ok) fail(`faucet refused (HTTP ${res.status}): ${(await res.text()).slice(0, 300)}`);
+  await waitForAccount(id);
+  log(`created ${id} (key file ${keyPath(id)})`);
+  return { id, kp };
+}
+
+async function transferNear(fromId, fromKey, toId, amountYocto) {
+  const acct = accountFor(fromId, fromKey);
+  const r = await acct.transfer({ receiverId: toId, amount: amountYocto.toString() });
+  log(`transferred ${amountYocto} yoctoNEAR to ${toId}: ${txLink(r)}`);
+  return r;
+}
+
+async function ensureOwnerHas(minYocto) {
+  let have = await accountAmount(ids.owner);
+  while (have < minYocto) {
+    const extra = await createFaucetAccount();
+    const extraBal = await accountAmount(extra.id);
+    const keep = BigInt(nearToYocto("0.05"));
+    const send = extraBal > keep ? extraBal - keep : 0n;
+    if (send === 0n) fail(`faucet account ${extra.id} had no transferable balance`);
+    await transferNear(extra.id, extra.kp, ids.owner, send);
+    have = await accountAmount(ids.owner);
+  }
+}
+
+async function ensureMin(id, minNear) {
+  const need = BigInt(nearToYocto(String(minNear)));
+  const have = await accountAmount(id);
+  if (have >= need) return;
+  const short = need - have + BigInt(nearToYocto("0.05"));
+  await ensureOwnerHas(short + BigInt(nearToYocto("1")));
+  await transferNear(ids.owner, rootKey, id, short);
+}
+
 // --- root account via faucet -------------------------------------------------
 const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : {};
 const saveState = () => writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
@@ -115,7 +165,7 @@ const sub = (p) => `${p}.${rootId}`;
 const ids = { owner: rootId, agent: sub("agent"), vendor: sub("vendor"), treasury: sub("treasury"), token: sub("tusdc") };
 
 // Testnet NEAR from the faucet only. Sizes leave room for contract storage.
-const funding = { agent: "1", vendor: "0.2", treasury: "3.5", tusdc: "2.5" };
+const funding = { agent: "1", vendor: "0.2", treasury: "7", tusdc: "5.5" };
 
 async function ensureSub(prefix) {
   const id = sub(prefix);
@@ -134,16 +184,23 @@ const keys = {};
 for (const p of Object.keys(funding)) keys[p] = await ensureSub(p);
 
 // --- contracts ------------------------------------------------------------
-const wasmCandidates = (crate) => [
-  join(ROOT, "contracts", crate, "target/near", `${crate.replace(/-/g, "_")}.wasm`),
-  join(ROOT, "contracts", crate, "target/wasm32-unknown-unknown/release", `${crate.replace(/-/g, "_")}.wasm`),
-  join(ROOT, "contracts/target/wasm32-unknown-unknown/release", `${crate.replace(/-/g, "_")}.wasm`),
-  join(ROOT, "target/wasm32-unknown-unknown/release", `${crate.replace(/-/g, "_")}.wasm`),
+// Directory is contracts/<dir>; cargo names the wasm after the package (openlid_treasury, openlid_test_ft).
+const wasmCandidates = (dir, stem) => [
+  join(ROOT, "contracts", dir, "target/near", `${stem}.wasm`),
+  join(ROOT, "contracts", dir, "target/wasm32-unknown-unknown/release", `${stem}.wasm`),
+  join(ROOT, "contracts/target/wasm32-unknown-unknown/release", `${stem}.wasm`),
+  join(ROOT, "target/wasm32-unknown-unknown/release", `${stem}.wasm`),
 ];
-const findWasm = (crate) => wasmCandidates(crate).find((p) => existsSync(p));
+const findWasm = (dir, stems) => {
+  for (const stem of stems) {
+    const hit = wasmCandidates(dir, stem).find((p) => existsSync(p));
+    if (hit) return hit;
+  }
+  return undefined;
+};
 
-const treasuryWasm = findWasm("treasury") ?? findWasm("openlid-treasury");
-const ftWasm = findWasm("test-ft") ?? findWasm("openlid-test-ft");
+const treasuryWasm = findWasm("treasury", ["openlid_treasury", "treasury", "openlid-treasury"]);
+const ftWasm = findWasm("test-ft", ["openlid_test_ft", "test_ft", "openlid-test-ft"]);
 
 function writeDemoEnv(deployed) {
   // Paths and account ids only. No key material.
@@ -185,13 +242,17 @@ const call = async (acct, contractId, methodName, args, deposit = "0") =>
 const tokenAcct = accountFor(ids.token, keys.tusdc);
 const treasuryAcct = accountFor(ids.treasury, keys.treasury);
 
+// Existing accounts may have been created with the older, lower funding amounts.
+await ensureMin(ids.token, funding.tusdc);
+await ensureMin(ids.treasury, funding.treasury);
+
 if (!state.ftDeployed) {
   const r = await tokenAcct.deployContract(readFileSync(ftWasm));
   log(`deployed test FT to ${ids.token}: ${txLink(r)}`);
   // Init args are not fixed by INTERFACES.md; override with DEMO_FT_INIT_ARGS (JSON) if they differ.
   const ftInit = process.env.DEMO_FT_INIT_ARGS
     ? JSON.parse(process.env.DEMO_FT_INIT_ARGS)
-    : { owner_id: ids.owner };
+    : { owner: ids.owner }; // test-ft::new(owner)
   await call(tokenAcct, ids.token, process.env.DEMO_FT_INIT_METHOD || "new", ftInit);
   log(`initialized test FT (tUSDC) owner=${ids.owner}`);
   state.ftDeployed = true;
@@ -207,8 +268,10 @@ if (!state.treasuryDeployed) {
     usdc_token: ids.token,
     per_bill_limit: PER_BILL_LIMIT,
     monthly_cap: MONTHLY_CAP,
+    // Deploy-time allowlist: active immediately. Later changes still wait 24h.
+    initial_allowlist: [ids.vendor],
   });
-  log(`initialized treasury: per_bill_limit=${PER_BILL_LIMIT} monthly_cap=${MONTHLY_CAP}`);
+  log(`initialized treasury: per_bill_limit=${PER_BILL_LIMIT} monthly_cap=${MONTHLY_CAP} initial_vendor=${ids.vendor}`);
   state.treasuryDeployed = true;
   saveState();
 }

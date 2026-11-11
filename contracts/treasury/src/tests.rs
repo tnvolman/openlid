@@ -50,7 +50,7 @@ fn ctx(caller: AccountId, now: u64) {
 
 fn init() -> Treasury {
     ctx(owner(), NOV_15);
-    Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(CAP))
+    Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(CAP), vec![])
 }
 
 /// Contract with `vendor.near` already allowlisted (proposal + 24h + execute).
@@ -130,21 +130,21 @@ fn init_sets_config() {
 #[should_panic(expected = "owner and agent must differ")]
 fn init_rejects_owner_equal_agent() {
     ctx(owner(), NOV_15);
-    Treasury::new(owner(), owner(), usdc(), U128(LIMIT), U128(CAP));
+    Treasury::new(owner(), owner(), usdc(), U128(LIMIT), U128(CAP), vec![]);
 }
 
 #[test]
 #[should_panic(expected = "per_bill_limit must be > 0")]
 fn init_rejects_zero_limit() {
     ctx(owner(), NOV_15);
-    Treasury::new(owner(), agent(), usdc(), U128(0), U128(CAP));
+    Treasury::new(owner(), agent(), usdc(), U128(0), U128(CAP), vec![]);
 }
 
 #[test]
 #[should_panic(expected = "monthly_cap must be > 0")]
 fn init_rejects_zero_cap() {
     ctx(owner(), NOV_15);
-    Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(0));
+    Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(0), vec![]);
 }
 
 // ---------- 1. per-bill limit ----------
@@ -169,7 +169,7 @@ fn per_bill_limit_at_limit_is_paid() {
     );
     assert_eq!(c.get_hold("bill-1".into()), None);
     assert_eq!(c.get_month_spent().spent, U128(LIMIT));
-    assert_eq!(event_names(), vec!["payout_requested", "payout_executed"]);
+    assert_eq!(event_names(), vec!["payout_requested"]);
 }
 
 #[test]
@@ -388,7 +388,7 @@ fn hold_approve_transfers_and_marks_approved() {
     assert_eq!(c.get_hold("unusual".into()).unwrap().status, "approved");
     assert_eq!(c.get_payout("unusual".into()).unwrap().status, "paid");
     assert_eq!(c.get_month_spent().spent, U128(3 * LIMIT));
-    assert_eq!(event_names(), vec!["hold_approved", "payout_executed"]);
+    assert_eq!(event_names(), vec!["hold_approved"]);
     assert!(c.list_holds(Some("held".into())).is_empty());
     assert_eq!(c.list_holds(Some("approved".into())).len(), 1);
     assert_eq!(c.list_holds(None).len(), 1);
@@ -457,6 +457,61 @@ fn failed_transfer_rolls_back_payout_and_cap() {
     assert_eq!(c.get_payout("unusual".into()), None);
     assert_eq!(c.get_hold("unusual".into()).unwrap().status, "held");
     assert_eq!(c.get_month_spent().spent, U128(0));
+    assert!(
+        !event_names().iter().any(|n| n == "payout_executed"),
+        "payout_executed must not fire when the transfer fails"
+    );
+}
+
+fn run_transfer_callback(c: &mut Treasury, bill_id: &str, amount: u128, from_hold: bool, result: PromiseResult) -> String {
+    let context = VMContextBuilder::new()
+        .current_account_id(treasury_id())
+        .predecessor_account_id(treasury_id())
+        .block_timestamp(NOV_15 + ALLOWLIST_DELAY_NS)
+        .build();
+    testing_env!(
+        context,
+        near_sdk::test_vm_config(),
+        RuntimeFeesConfig::test(),
+        Default::default(),
+        vec![result],
+    );
+    c.on_payout_transfer(bill_id.into(), "2026-11".into(), U128(amount), from_hold)
+}
+
+#[test]
+fn payout_executed_emitted_only_after_successful_transfer() {
+    let mut c = init_with_vendor();
+    request(&mut c, LIMIT, "bill-1");
+    assert_eq!(event_names(), vec!["payout_requested"]);
+
+    let status = run_transfer_callback(&mut c, "bill-1", LIMIT, false, PromiseResult::Successful(vec![]));
+    assert_eq!(status, "paid");
+    assert_eq!(c.get_payout("bill-1".into()).unwrap().status, "paid");
+    assert_eq!(event_names(), vec!["payout_executed"]);
+}
+
+#[test]
+fn failed_direct_transfer_does_not_emit_payout_executed() {
+    let mut c = init_with_vendor();
+    request(&mut c, LIMIT, "bill-1");
+    let status = run_transfer_callback(&mut c, "bill-1", LIMIT, false, PromiseResult::Failed);
+    assert_eq!(status, "transfer_failed");
+    assert_eq!(c.get_payout("bill-1".into()), None);
+    assert!(!event_names().iter().any(|n| n == "payout_executed"));
+}
+
+#[test]
+#[should_panic(expected = "vendor is not active on the allowlist")]
+fn hold_approve_rechecks_allowlist() {
+    let mut c = init_with_vendor();
+    request(&mut c, 3 * LIMIT, "unusual");
+    ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
+    c.propose_allowlist_change(vendor(), "remove".into());
+    ctx(stranger(), NOV_15 + 2 * ALLOWLIST_DELAY_NS);
+    c.execute_allowlist_change(vendor());
+    ctx(owner(), NOV_15 + 2 * ALLOWLIST_DELAY_NS);
+    c.approve_hold("unusual".into());
 }
 
 // ---------- request_payout argument checks ----------
@@ -541,4 +596,26 @@ fn unauthorized_external_callback() {
     let mut c = init_with_vendor();
     ctx(agent(), NOV_15);
     c.on_payout_transfer("x".into(), "2026-11".into(), U128(1), false);
+}
+
+#[test]
+fn initial_allowlist_is_active_immediately() {
+    ctx(owner(), NOV_15);
+    let mut c = Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(CAP), vec![vendor()]);
+    assert_eq!(c.get_allowlist(), vec![vendor()]);
+    ctx(agent(), NOV_15);
+    c.request_payout(vendor(), U128(LIMIT), "init-auto".into(), "from init allowlist".into());
+    assert_eq!(c.get_payout("init-auto".into()).unwrap().status, "paid");
+    assert_eq!(ft_transfers().len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "allowlist change delay has not passed")]
+fn later_allowlist_add_still_waits_24h() {
+    ctx(owner(), NOV_15);
+    let other: AccountId = "other-vendor.near".parse().unwrap();
+    let mut c = Treasury::new(owner(), agent(), usdc(), U128(LIMIT), U128(CAP), vec![vendor()]);
+    c.propose_allowlist_change(other.clone(), "add".into());
+    ctx(stranger(), NOV_15);
+    c.execute_allowlist_change(other);
 }

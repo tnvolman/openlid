@@ -1,5 +1,7 @@
 //! OpenLid treasury contract.
 //!
+//! Unaudited. Testnet only. Not for real funds. Provided as-is.
+//!
 //! Holds USDC (NEP-141) for a church and pays allowlisted vendors under an
 //! on-chain policy: a per-bill limit, a calendar-month (UTC) cap, a vendor
 //! allowlist with a 24 hour change delay, and treasurer holds for bills over
@@ -204,11 +206,12 @@ impl Treasury {
         usdc_token: AccountId,
         per_bill_limit: U128,
         monthly_cap: U128,
+        initial_allowlist: Vec<AccountId>,
     ) -> Self {
         require!(owner != agent, "owner and agent must differ");
         require!(per_bill_limit.0 > 0, "per_bill_limit must be > 0");
         require!(monthly_cap.0 > 0, "monthly_cap must be > 0");
-        Self {
+        let mut this = Self {
             owner,
             agent,
             usdc_token,
@@ -220,7 +223,15 @@ impl Treasury {
             holds: IterableMap::new(StorageKey::Holds),
             spent_month: year_month_from_ns(env::block_timestamp()),
             month_spent: 0,
+        };
+        // Initial vendors are part of deploy-time configuration, not a later
+        // "change": they are active immediately. Subsequent add/remove still
+        // wait 24 hours via propose_allowlist_change / execute_allowlist_change.
+        for vendor in initial_allowlist {
+            this.vendors.insert(vendor.clone(), true);
+            emit("allowlist_executed", json!({ "vendor": vendor, "action": "add" }));
         }
+        this
     }
 
     // ---------- change methods ----------
@@ -284,11 +295,17 @@ impl Treasury {
         }
     }
 
-    /// Owner only. Re-checks the monthly cap, transfers, marks the hold
-    /// `approved` and records a `paid` payout.
+    /// Owner only. Re-checks the monthly cap and that the vendor is still
+    /// active on the allowlist, then transfers, marks the hold `approved`
+    /// and records a `paid` payout.
     pub fn approve_hold(&mut self, bill_id: String) -> Promise {
         self.assert_owner();
         let mut hold = self.held(&bill_id);
+        match self.vendors.get(&hold.vendor).copied() {
+            Some(true) => {}
+            Some(false) => env::panic_str("vendor is not active on the allowlist"),
+            None => env::panic_str("vendor is not on the allowlist"),
+        }
         require!(
             policy::fits_cap(self.current_month_spent(), hold.amount, self.monthly_cap),
             "monthly cap exceeded"
@@ -377,6 +394,18 @@ impl Treasury {
         );
         let ok = !matches!(env::promise_result_checked(0, 256), Err(PromiseError::Failed));
         if ok {
+            // Emit only after ft_transfer succeeds so a rolled-back payout
+            // is never advertised as paid.
+            if let Some(payout) = self.payouts.get(&bill_id) {
+                emit(
+                    "payout_executed",
+                    json!({
+                        "bill_id": bill_id,
+                        "vendor": payout.vendor,
+                        "amount": U128(payout.amount),
+                    }),
+                );
+            }
             return STATUS_PAID.to_string();
         }
         self.payouts.remove(&bill_id);
@@ -495,10 +524,6 @@ impl Treasury {
         self.payouts.insert(
             bill_id.clone(),
             Payout { vendor: vendor.clone(), amount, memo: memo.clone() },
-        );
-        emit(
-            "payout_executed",
-            json!({ "bill_id": bill_id, "vendor": vendor, "amount": U128(amount) }),
         );
         ext_ft::ext(self.usdc_token.clone())
             .with_attached_deposit(ONE_YOCTO)

@@ -189,7 +189,7 @@ export async function makeHarness(opts: { network?: string } = {}) {
 }
 
 export const giftBody = (overrides: Record<string, unknown> = {}) => ({
-  donor: 'Donor A',
+  donor: 'donor-demo-1',
   fund: 'general',
   originAsset: 'nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near',
   amount: '10000000',

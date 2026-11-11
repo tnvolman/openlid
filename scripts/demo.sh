@@ -26,15 +26,17 @@
 # contracts/treasury and contracts/test-ft; apps/api present.
 #
 # Usage:
-#   scripts/demo.sh            # full run
+#   scripts/demo.sh            # full run; leaves API (and UI) up until Ctrl-C
 #   scripts/demo.sh --no-ui    # skip starting the UI
+#   scripts/demo.sh --once     # run the gift, settlement, bills, and treasurer
+#                               approve, print the transcript, then exit
 #
 # Env overrides (optional):
 #   OPENLID_API_URL       default http://127.0.0.1:8787
 #   OPENLID_DEMO_KEYS_DIR default .demo-keys
 #   DEMO_SMALL_AMOUNT     default 50000000   (50 tUSDC, under the 100 tUSDC per-bill limit)
 #   DEMO_LARGE_AMOUNT     default 500000000  (500 tUSDC, over the limit, under the cap)
-#   DEMO_GIFT_AMOUNT      default 25000000   (origin-asset atomic units for the dry-run quote)
+#   DEMO_GIFT_AMOUNT      default 600000000  (tUSDC minted into the treasury; must cover both bills)
 #   DEMO_ORIGIN_ASSET     default nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near
 #
 # Key safety: this script never prints key material and never sources the
@@ -47,15 +49,17 @@ API_URL="${OPENLID_API_URL:-http://127.0.0.1:8787}"
 KEYS_DIR="$ROOT/${OPENLID_DEMO_KEYS_DIR:-.demo-keys}"
 SMALL="${DEMO_SMALL_AMOUNT:-50000000}"
 LARGE="${DEMO_LARGE_AMOUNT:-500000000}"
-GIFT_AMOUNT="${DEMO_GIFT_AMOUNT:-25000000}"
+GIFT_AMOUNT="${DEMO_GIFT_AMOUNT:-600000000}"
 ORIGIN_ASSET="${DEMO_ORIGIN_ASSET:-nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near}"
 LOG_DIR="$ROOT/tmp"
 NO_UI=0
+ONCE=0
 
 for arg in "$@"; do
   case "$arg" in
     --no-ui) NO_UI=1 ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    --once) ONCE=1; NO_UI=1 ;;
+    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -148,7 +152,7 @@ split() { CODE="${1##*$'\n'}"; BODY="${1%$'\n'*}"; }
 
 # --- 4. dry-run quote + simulated settlement ----------------------------------
 say "Gift: dry-run 1Click quote (no deposit address, nothing deposited)"
-split "$(post /api/gifts/quote "$(printf '{"donor":"Demo Donor (testnet)","fund":"missions","originAsset":"%s","amount":"%s","refundTo":"0x000000000000000000000000000000000000dEaD","refundType":"ORIGIN_CHAIN","slippageTolerance":100}' "$ORIGIN_ASSET" "$GIFT_AMOUNT")")"
+split "$(post /api/gifts/quote "$(printf '{"donor":"donor-demo-1","fund":"missions","originAsset":"%s","amount":"%s","refundTo":"0x000000000000000000000000000000000000dEaD","refundType":"ORIGIN_CHAIN","slippageTolerance":100}' "$ORIGIN_ASSET" "$GIFT_AMOUNT")")"
 echo "    HTTP $CODE $BODY"
 [[ "$CODE" == 2* ]] || die "quote failed"
 GIFT_ID="$(jget id <<<"$BODY")"
@@ -161,6 +165,8 @@ say "Gift: simulated settlement on testnet (mints tUSDC into the treasury contra
 split "$(post "/api/gifts/$GIFT_ID/simulate-settlement" '{}')"
 echo "    HTTP $CODE $BODY"
 [[ "$CODE" == 2* && "$(jget status <<<"$BODY")" == "settled" ]] || die "simulate-settlement did not settle the gift"
+SETTLE_TX="$(jget settlementTxHash <<<"$BODY")"
+echo "    settlement tx: ${SETTLE_TX:-"(none returned)"}"
 
 # --- 5. bills ---------------------------------------------------------------
 request_payout() { # billId amount memo expected
@@ -175,11 +181,26 @@ request_payout() { # billId amount memo expected
 }
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+AUTO_BILL="demo-auto-$stamp"
+HOLD_BILL="demo-hold-$stamp"
 say "Bills to $DEMO_VENDOR"
 bills_ok=1
-request_payout "demo-auto-$stamp" "$SMALL" "Demo: routine allowlisted bill" paid || bills_ok=0
-request_payout "demo-hold-$stamp" "$LARGE" "Demo: unusual bill over per-bill limit" held || bills_ok=0
+request_payout "$AUTO_BILL" "$SMALL" "Demo: routine allowlisted bill" paid || bills_ok=0
+request_payout "$HOLD_BILL" "$LARGE" "Demo: unusual bill over per-bill limit" held || bills_ok=0
 echo "    Held bills: $(curl -s "$API_URL/api/holds?status=held")"
+
+# --- 5b. treasurer approves the unusual bill --------------------------------
+approve_ok=0
+if [[ $bills_ok -eq 1 ]]; then
+  say "Treasurer approves the held bill $HOLD_BILL (owner / treasurer key, not the agent)"
+  split "$(post "/api/holds/$HOLD_BILL/approve" '{}')"
+  echo "    HTTP $CODE $BODY"
+  if [[ "$CODE" == 2* && "$(jget status <<<"$BODY")" == "approved" ]]; then
+    approve_ok=1
+  else
+    echo "    (approve did not return status approved)"
+  fi
+fi
 
 # --- 6. UI -------------------------------------------------------------------
 if [[ $NO_UI -eq 0 ]]; then
@@ -195,6 +216,26 @@ fi
 
 [[ $bills_ok -eq 1 ]] || echo "
 NOTE: bills were not both accepted (see above). The gift leg ran; the payout leg did not complete."
+if [[ $ONCE -eq 1 ]]; then
+  say "Demo once-mode summary (testnet account ids and tx hashes only; no keys)"
+  echo "    gift id: $GIFT_ID"
+  echo "    deposit address: $DEPOSIT"
+  echo "    quote mode: $QUOTE_MODE"
+  echo "    settlement tx: ${SETTLE_TX:-none}"
+  # Re-fetch the settled gift so we print the mint tx, not the last approve body.
+  gift_json="$(curl -s "$API_URL/api/gifts/$GIFT_ID")"
+  echo "    settled gift: $gift_json"
+  echo "    auto bill: $AUTO_BILL"
+  echo "    hold bill: $HOLD_BILL (approved=$approve_ok)"
+  echo "    payouts: $(curl -s "$API_URL/api/payouts")"
+  echo "    holds: $(curl -s "$API_URL/api/holds")"
+  echo "    summary: $(curl -s "$API_URL/api/summary")"
+  if [[ $bills_ok -eq 1 && $approve_ok -eq 1 ]]; then
+    say "Demo steps completed. API will stop on exit."
+    exit 0
+  fi
+  die "Demo ran but a payout or approve step did not succeed (see above)." 5
+fi
 
 say "Running on NEAR testnet. Ctrl-C to stop."
 wait

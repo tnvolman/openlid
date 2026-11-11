@@ -35,7 +35,7 @@ Michael approved a NEAR **testnet-only** demo at 12:45 AM ET on Nov 11, $0 spend
 - The $0 demo must run with `ONECLICK_API_KEY` unset. If a key is not set, do not call the live 1Click endpoint (it is a paid/partner API). Use the real client against a dry-run-shaped local stub with the same types as `POST /v0/quote` (`dry: true`, no `depositAddress`). Tests mock the HTTP client either way.
 - Settlement is **not** a cross-chain transfer. A testnet adapter mints or transfers a testnet USDC-like token (a simple test FT contract) into the church treasury contract, then marks the gift `settled`. The README and the demo must say plainly that the cross-chain leg is a dry-run quote plus a simulated settlement on testnet.
 - Testnet keys are generated locally at demo time into `OPENLID_DEMO_KEYS_DIR` (default `.demo-keys/`, gitignored). Nothing in that directory is committed. Key material is never printed to logs, stdout, or error messages (print paths and account ids only).
-- Do not add a LICENSE file. README must include the line: `License: to be decided.`
+- Licensed under Apache-2.0 (see `LICENSE` and `NOTICE`). The OpenLid name and logo are not licensed under Apache-2.0; see `TRADEMARK.md`.
 - The GitHub repository stays PRIVATE. Never change visibility.
 
 ## Contract test FT (`contracts/test-ft`)
@@ -48,18 +48,19 @@ Rust `near-sdk` 5. Init once. Panic with a clear message on unauthorized callers
 
 ### Init
 
-`new(owner: AccountId, agent: AccountId, usdc_token: AccountId, per_bill_limit: U128, monthly_cap: U128)`
+`new(owner: AccountId, agent: AccountId, usdc_token: AccountId, per_bill_limit: U128, monthly_cap: U128, initial_allowlist: Vec<AccountId>)`
 
 - `owner` and `agent` must differ.
 - Limits are in USDC atomic units and must be > 0.
 - Monthly window is calendar month UTC (`YYYY-MM`). Spent resets when the month changes.
+- `initial_allowlist` vendors (may be empty) are active immediately. This is deploy-time configuration, not a later change. Every subsequent add or remove still uses `propose_allowlist_change` and the 24 hour delay.
 
 ### Change methods
 
 | Method | Caller | Args | Behavior |
 | --- | --- | --- | --- |
 | `request_payout` | `agent` only | `vendor: AccountId, amount: U128, bill_id: String, memo: String` | `bill_id` must be unique and non-empty; `amount` > 0. If `vendor` is active on the allowlist, `amount <= per_bill_limit`, and `month_spent + amount <= monthly_cap`, transfer USDC to `vendor` immediately and record a payout with status `paid`. If `vendor` is active, `amount > per_bill_limit`, and `month_spent + amount <= monthly_cap`, create a hold (`status: "held"`) and do not transfer. Otherwise panic (unknown vendor, inactive vendor, cap exceeded, duplicate `bill_id`). |
-| `approve_hold` | `owner` only | `bill_id: String` | Hold must be `held`. Re-check cap at approval time. Transfer USDC, mark payout `paid`, mark hold `approved`. |
+| `approve_hold` | `owner` only | `bill_id: String` | Hold must be `held`. Re-check cap and that the vendor is still active on the allowlist. Transfer USDC, mark payout `paid`, mark hold `approved`. |
 | `reject_hold` | `owner` only | `bill_id: String` | Hold must be `held`. Mark hold `rejected`. No transfer. Does not consume cap. |
 | `propose_allowlist_change` | `owner` only | `vendor: AccountId, action: String` | `action` is `add` or `remove`. Stores a proposal with `execute_after = now + 24 hours` (86_400_000_000_000 ns). Replaces any pending proposal for the same vendor. |
 | `execute_allowlist_change` | any account | `vendor: AccountId` | Pending proposal must exist and `block_timestamp >= execute_after`. Then add or remove the vendor. Calling before the delay panics. |
@@ -231,4 +232,4 @@ Treasurer page against the HTTP API:
 
 - Contract: cap, per-bill limit, allowlist add/remove, 24h delay (too early fails, after delay succeeds), hold + treasurer approve, unauthorized caller rejected for `request_payout` and `approve_hold`. Prefer `near-sdk` unit tests; `near-workspaces` sandbox is optional and must not be faked if it will not run.
 - App: dry-run quote persists a unique deposit address per gift (`sim:` when the quote has none); two gifts never share an address; mocked sync maps `SUCCESS` → `settled`, `REFUNDED` → `refunded`, `FAILED` → `failed`; matching is by deposit address only (a second gift with the same amount does not steal the first gift's status); `simulate-settlement` credits the test FT and marks `settled`, and is refused when the network is mainnet.
-- UI / README: setup, architecture, known-issues, the testnet-only / dry-run plus simulated settlement wording, the line `License: to be decided.`, and a short POTLOCK comparison written from POTLOCK's public docs (open public-goods / quadratic-funding pots vs OpenLid's church treasury with on-contract vendor policy). No invented POTLOCK claims. No LICENSE file.
+- UI / README: setup, architecture, known-issues, the testnet-only / dry-run plus simulated settlement wording, the Apache-2.0 license line, and a short POTLOCK comparison written from POTLOCK's public docs (open public-goods / quadratic-funding pots vs OpenLid's church treasury with on-contract vendor policy). No invented POTLOCK claims.

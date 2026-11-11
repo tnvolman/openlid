@@ -1,4 +1,4 @@
-// Static demo fixture for ?mock=1 and tests. Mirrors the testnet demo: every
+// Static demo fixture for ?mock=1 and tests (Example Community Church). Mirrors the testnet demo: every
 // gift is a dry-run quote with a simulated `sim:` deposit address (no real
 // deposit address, no live cross-chain deposit). Fake .testnet names only:
 // no keys, no real wallets, no mainnet anything.
@@ -24,12 +24,12 @@ const gift = (id: string, donor: string, fund: Gift["fund"], amountOut: string, 
 export function fixtureState() {
   return {
     gifts: [
-      gift("g6", "Donor F", "building", "75000000", "failed"),
-      gift("g5", "Donor E", "missions", "40000000", "refunded"),
-      gift("g4", "Donor D", "general", "10000000", "processing"),
-      gift("g3", "Donor C", "building", "250000000", "settled"),
-      gift("g2", "Donor B", "missions", "60000000", "settled"),
-      gift("g1", "Donor A", "general", "100000000", "settled"),
+      gift("g6", "donor-demo-6", "building", "75000000", "failed"),
+      gift("g5", "donor-demo-5", "missions", "40000000", "refunded"),
+      gift("g4", "donor-demo-4", "general", "10000000", "processing"),
+      gift("g3", "donor-demo-3", "building", "250000000", "settled"),
+      gift("g2", "donor-demo-2", "missions", "60000000", "settled"),
+      gift("g1", "donor-demo-1", "general", "100000000", "settled"),
     ] as Gift[],
     payouts: [
       { bill_id: "bill-electric-001", vendor: "power-co.demo.testnet", amount: "180000000", memo: "Electric, October", status: "paid" },

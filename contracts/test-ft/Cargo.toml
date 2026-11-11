@@ -2,6 +2,7 @@
 name = "openlid-test-ft"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.95"
 description = "OpenLid testnet-only NEP-141 test token (tUSDC, 6 decimals). Not for mainnet."
 publish = false
 

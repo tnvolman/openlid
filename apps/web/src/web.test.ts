@@ -158,7 +158,7 @@ describe("CSV download", () => {
     const f = createMockFetch();
     const text = await (await f("/api/export.csv")).text();
     assert.ok(text.startsWith(`# ${RECEIPT_NOTE}`));
-    assert.match(text, /gift,g5,Donor E,missions,40000000,refunded/);
+    assert.match(text, /gift,g5,donor-demo-5,missions,40000000,refunded/);
   });
 });
 

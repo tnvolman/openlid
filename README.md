@@ -1,5 +1,7 @@
 # OpenLid
 
+**Unaudited. Testnet only. Not for real funds. Provided as-is.**
+
 Church stablecoin giving on NEAR. Hackathon build by Michael McClanahan (@tnvolman).
 
 > **NEAR testnet only. $0 spend.** The cross-chain leg is a dry-run 1Click quote plus a simulated settlement on NEAR testnet. There are no mainnet accounts, no real funds, and no paid APIs, and no deposit is ever sent.
@@ -172,12 +174,9 @@ The web tests use the in-memory fixture. They check:
 
 - **The cross-chain leg is not real.** 1Click is mainnet-only, so the demo uses dry-run quotes (no deposit address) and a simulated settlement that mints a test token on testnet. No real cross-chain deposit happens. A live mainnet transfer would need an explicit yes on a funded wallet, and that is out of scope for this demo.
 - **1Click is mocked in tests.** No test calls the real 1Click service. Without `ONECLICK_API_KEY`, the API uses a local dry-run stub.
-- **Contracts are not on this branch.** On `openlid/ui`, `contracts/` and `apps/api` come from other worktrees.
-  - A run of `scripts/demo.sh` on this branch (Nov 11, 2026) created real testnet accounts through the faucet, with keys written only to `.demo-keys/`.
-  - It then stopped with exit code 3 because there was no treasury or test-FT wasm to deploy. No gift, settlement, or bill was created, and nothing was faked.
-  - Build the contracts after integration and re-run.
-- **24-hour allowlist timelock.** The contract delays allowlist changes by 24 hours. On a fresh deploy, the demo proposes adding the vendor, but the contract will reject both bills until that 24-hour delay has passed. Re-run `scripts/demo.sh` after 24 hours: setup completes the allowlist add, and the paid and held bills then go through. The demo does not work around this, because the delay is the policy being shown.
-- **Assumed test-FT init.** `INTERFACES.md` does not fix the test-FT init signature. `setup.mjs` assumes `new({ owner_id })`. If the contract differs, override it with `DEMO_FT_INIT_METHOD` and `DEMO_FT_INIT_ARGS`. If the token has no `storage_deposit`, that step is skipped with a note.
+- **Wasm filenames.** After `cargo build --target wasm32-unknown-unknown --release`, setup looks for `contracts/treasury/target/wasm32-unknown-unknown/release/openlid_treasury.wasm` and `contracts/test-ft/target/wasm32-unknown-unknown/release/openlid_test_ft.wasm` (and the `target/near/` equivalents). Build those before `scripts/demo.sh`.
+- **24-hour allowlist timelock.** Later allowlist add or remove still waits 24 hours. A fresh deploy may pass an `initial_allowlist` to `new`; those vendors are active immediately, as deploy-time configuration rather than a later change. The demo uses that so the first run can pay and hold bills on the same day.
+- **Test-FT init.** The test FT is initialized with `new({ owner })`, matching `contracts/test-ft`. Override with `DEMO_FT_INIT_METHOD` and `DEMO_FT_INIT_ARGS` only if you swap the token. If the token has no `storage_deposit`, that step is skipped with a note.
 - **The faucet may limit requests.** The testnet faucet can rate-limit or change its endpoint. Override the endpoint with `NEAR_TESTNET_FAUCET`. The created account is reused through `.demo-keys/state.json`.
 - **Assumed API test script.** The `npm test` command for the API assumes the API package defines a `test` script.
 - **NEAR sandbox.** `near-workspaces` sandbox tests may not be in this tree. Contract coverage is `near-sdk` unit tests.
@@ -205,7 +204,13 @@ This comparison uses only POTLOCK's public docs at <https://docs.potlock.io>.
 
 ## License
 
-License: to be decided.
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+The OpenLid name and logo are not licensed under Apache-2.0. See [TRADEMARK.md](TRADEMARK.md).
+
+To report a vulnerability, use GitHub private vulnerability reporting (the repo Security tab, **Report a vulnerability**). See [SECURITY.md](SECURITY.md).
 
 ## Credit
 

@@ -218,7 +218,12 @@ export class NearRpcContractClient implements NearContractClient {
     if (await this.getPayout(args.billId)) return { status: 'paid' };
     const hold = await this.getHold(args.billId);
     if (hold?.status === 'held') return { status: 'held' };
-    throw new Error(`request_payout for ${args.billId} succeeded but no payout or hold was found`);
+    // The function-call "succeeded" but the ft_transfer callback rolled the
+    // payout back (commonly: treasury token balance too low). Surface as a
+    // contract rejection, not a 500.
+    throw new ContractRejectedError(
+      `ft_transfer failed and the payout was rolled back for ${args.billId} (treasury may lack token balance)`,
+    );
   }
 
   getPayout(billId: string): Promise<PayoutView | null> {

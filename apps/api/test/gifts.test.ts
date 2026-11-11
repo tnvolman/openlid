@@ -30,7 +30,7 @@ describe('gifts', () => {
     assert.equal(r1.json.quoteMode, 'dry_run');
     assert.equal(r1.json.depositAddressSimulated, false);
     assert.equal(r1.json.fund, 'general');
-    assert.equal(r1.json.donor, 'Donor A');
+    assert.equal(r1.json.donor, 'donor-demo-1');
     assert.equal(r1.json.amountIn, '10000000');
     assert.equal(r1.json.amountOut, '9950000');
     assert.equal(r1.json.depositMemo, null);
@@ -63,7 +63,7 @@ describe('gifts', () => {
       },
     );
 
-    const r2 = await h.request('POST', '/api/gifts/quote', giftBody({ donor: 'Donor B', fund: 'missions' }));
+    const r2 = await h.request('POST', '/api/gifts/quote', giftBody({ donor: 'donor-demo-2', fund: 'missions' }));
     assert.equal(r2.status, 201, r2.text);
     assert.equal(r2.json.depositAddress, ADDR_B);
     assert.notEqual(r2.json.id, r1.json.id);
@@ -94,17 +94,17 @@ describe('gifts', () => {
     const r1 = await h.request('POST', '/api/gifts/quote', giftBody());
     assert.equal(r1.status, 201);
 
-    const r2 = await h.request('POST', '/api/gifts/quote', giftBody({ donor: 'Donor B' }));
+    const r2 = await h.request('POST', '/api/gifts/quote', giftBody({ donor: 'donor-demo-2' }));
     assert.equal(r2.status, 409, r2.text);
     assert.match(r2.json.error, /deposit address/);
 
     // Same EVM address in a different case is still reuse.
-    const r3 = await h.request('POST', '/api/gifts/quote', giftBody({ donor: 'Donor C' }));
+    const r3 = await h.request('POST', '/api/gifts/quote', giftBody({ donor: 'donor-demo-3' }));
     assert.equal(r3.status, 409, r3.text);
 
     const list = await h.request('GET', '/api/gifts');
     assert.equal(list.json.gifts.length, 1);
-    assert.equal(list.json.gifts[0].donor, 'Donor A');
+    assert.equal(list.json.gifts[0].donor, 'donor-demo-1');
   });
 
   it('3. matching is by deposit address only: same amountIn, independent statuses', async () => {
