@@ -6,9 +6,11 @@
 //! on-chain policy: a per-bill limit, a calendar-month (UTC) cap, a vendor
 //! allowlist with a 24 hour change delay, and treasurer holds for bills over
 //! the per-bill limit. Every bill names a fund (`general`, `missions`,
-//! `building`) and can only be paid from that fund's ledger balance, which the
-//! owner credits per settled gift with `credit_fund`. See `INTERFACES.md` at
-//! the repo root for the contract.
+//! `building`) and can only be paid from that fund's uncommitted balance
+//! (received - paid - held), which the owner credits per settled gift with
+//! `credit_fund`. Outstanding holds reserve their amount. Funds are siloed:
+//! no fund, not even `general`, can pay another fund's bill. See
+//! `INTERFACES.md` at the repo root for the contract.
 
 use near_sdk::json_types::{U128, U64};
 use near_sdk::serde_json::{self, json};
@@ -46,6 +48,23 @@ pub const REASON_OVER_PER_BILL_LIMIT: &str = "over_per_bill_limit";
 pub const FUNDS: [&str; 3] = ["general", "missions", "building"];
 pub const ERR_INVALID_FUND: &str = "fund must be one of general, missions, building";
 pub const ERR_INSUFFICIENT_FUND: &str = "insufficient fund balance";
+
+/// Net-asset class wording (current US GAAP, ASU 2016-14). `missions` and
+/// `building` hold gifts the donor gave for that purpose; `general` holds gifts
+/// without a donor-imposed purpose. Classification is a label only: every fund
+/// is still siloed and pays only bills tagged to it. Using general money for a
+/// missions or building purpose would be an explicit interfund transfer, which
+/// this contract does not implement.
+pub const WITH_DONOR_RESTRICTIONS: &str = "with donor restrictions";
+pub const WITHOUT_DONOR_RESTRICTIONS: &str = "without donor restrictions";
+
+pub fn fund_restriction(fund: &str) -> &'static str {
+    match fund {
+        "general" => WITHOUT_DONOR_RESTRICTIONS,
+        "missions" | "building" => WITH_DONOR_RESTRICTIONS,
+        _ => env::panic_str(ERR_INVALID_FUND),
+    }
+}
 
 #[ext_contract(ext_ft)]
 #[allow(dead_code)]
@@ -142,18 +161,20 @@ pub struct Hold {
 }
 
 /// Per-fund ledger. `received` is credited by the owner per settled gift;
-/// `paid` grows with every successful payout from the fund.
+/// `paid` grows with every successful payout from the fund; `held` is the sum
+/// of outstanding holds, reserved so two holds cannot commit the same money.
 #[near(serializers = [borsh])]
 #[derive(Clone, Debug, Default)]
 pub struct FundLedger {
     pub received: u128,
     pub paid: u128,
+    pub held: u128,
 }
 
 impl FundLedger {
-    /// `received - paid`, never negative.
+    /// Uncommitted balance: `received - paid - held`, never negative.
     pub fn available(&self) -> u128 {
-        self.received.saturating_sub(self.paid)
+        self.received.saturating_sub(self.paid).saturating_sub(self.held)
     }
 }
 
@@ -199,12 +220,13 @@ pub struct HoldView {
     pub status: String,
 }
 
-/// `available = received - paid`. `held` (outstanding holds) is shown but does
-/// not reduce `available`; approving a hold re-checks `available`.
+/// `available = received - paid - held` (uncommitted). Outstanding holds
+/// (`held`) are reserved. `restriction` is the GAAP net-asset class label.
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq)]
 pub struct FundView {
     pub fund: String,
+    pub restriction: String,
     pub received: U128,
     pub paid: U128,
     pub available: U128,
@@ -288,7 +310,8 @@ impl Treasury {
     /// for a hold; for a payment returns the ft_transfer promise, resolved to
     /// `"paid"` (or `"transfer_failed"` if the token rejected the transfer, in
     /// which case the payout, cap usage and fund `paid` are rolled back).
-    /// Both paths require `amount <= available` for `fund`.
+    /// Both paths require `amount <= available` (uncommitted) for `fund`; a
+    /// hold reserves its amount until approved or rejected.
     pub fn request_payout(
         &mut self,
         vendor: AccountId,
@@ -317,7 +340,8 @@ impl Treasury {
         if let PayoutDecision::Reject(reason) = decision {
             env::panic_str(reason.message());
         }
-        // A hold that the fund already cannot cover is refused too.
+        // Checked for holds too, up front: a hold the fund cannot cover (after
+        // other holds' reservations) is refused now, not at approval.
         self.assert_fund_covers(&fund, amount.0);
         emit(
             "payout_requested",
@@ -329,6 +353,9 @@ impl Treasury {
                 PromiseOrValue::Promise(self.pay(bill_id, vendor, amount.0, memo, fund, false))
             }
             PayoutDecision::Hold => {
+                let mut ledger = self.ledger(&fund);
+                ledger.held = ledger.held.checked_add(amount.0).unwrap_or_else(|| env::panic_str("fund held overflow"));
+                self.fund_ledger.insert(fund.clone(), ledger);
                 self.holds.insert(
                     bill_id.clone(),
                     Hold {
@@ -356,9 +383,9 @@ impl Treasury {
     }
 
     /// Owner only. Re-checks the monthly cap, that the vendor is still active
-    /// on the allowlist, and that the hold's fund still has `amount` available
-    /// (another payout may have used it since), then transfers, marks the hold
-    /// `approved` and records a `paid` payout.
+    /// on the allowlist, and (defensively) that the hold's own reservation is
+    /// still covered, then converts it from `held` to `paid`, transfers, marks
+    /// the hold `approved` and records a `paid` payout.
     pub fn approve_hold(&mut self, bill_id: String) -> Promise {
         self.assert_owner();
         let mut hold = self.held(&bill_id);
@@ -371,7 +398,7 @@ impl Treasury {
             policy::fits_cap(self.current_month_spent(), hold.amount, self.monthly_cap),
             "monthly cap exceeded"
         );
-        self.assert_fund_covers(&hold.fund, hold.amount);
+        self.assert_hold_covered(&hold.fund, hold.amount);
         hold.status = HoldStatus::Approved;
         let (vendor, amount, memo, fund) =
             (hold.vendor.clone(), hold.amount, hold.memo.clone(), hold.fund.clone());
@@ -403,11 +430,15 @@ impl Treasury {
         );
     }
 
-    /// Owner only. Marks the hold `rejected`. No transfer, no cap usage, no
-    /// fund ledger change.
+    /// Owner only. Marks the hold `rejected` and releases its reservation
+    /// (`held` down, `available` up). No transfer, no cap usage; `received`
+    /// and `paid` are unchanged.
     pub fn reject_hold(&mut self, bill_id: String) {
         self.assert_owner();
         let mut hold = self.held(&bill_id);
+        let mut ledger = self.ledger(&hold.fund);
+        ledger.held = ledger.held.saturating_sub(hold.amount);
+        self.fund_ledger.insert(hold.fund.clone(), ledger);
         hold.status = HoldStatus::Rejected;
         self.holds.insert(bill_id.clone(), hold);
         emit("hold_rejected", json!({ "bill_id": bill_id }));
@@ -466,7 +497,7 @@ impl Treasury {
 
     /// Resolves the ft_transfer started by `request_payout` / `approve_hold`.
     /// On failure, undoes the payout record, cap usage and fund `paid` (and
-    /// returns an approved hold to `held`).
+    /// returns an approved hold to `held`, restoring its reservation).
     #[private]
     pub fn on_payout_transfer(
         &mut self,
@@ -499,6 +530,10 @@ impl Treasury {
         if let Some(payout) = self.payouts.remove(&bill_id) {
             let mut ledger = self.ledger(&payout.fund);
             ledger.paid = ledger.paid.saturating_sub(payout.amount);
+            if from_hold {
+                // The hold goes back to `held`, so its reservation comes back too.
+                ledger.held = ledger.held.saturating_add(payout.amount);
+            }
             self.fund_ledger.insert(payout.fund, ledger);
         }
         if self.spent_month == year_month {
@@ -565,14 +600,12 @@ impl Treasury {
     /// Ledger for one fund. Panics on an unknown fund name.
     pub fn get_fund(&self, fund: String) -> FundView {
         assert_fund(&fund);
-        let held = self.held_by_fund();
-        self.fund_view(&fund, &held)
+        self.fund_view(&fund)
     }
 
     /// Ledgers for all funds, in `FUNDS` order.
     pub fn get_fund_ledger(&self) -> Vec<FundView> {
-        let held = self.held_by_fund();
-        FUNDS.iter().map(|f| self.fund_view(f, &held)).collect()
+        FUNDS.iter().map(|f| self.fund_view(f)).collect()
     }
 
     pub fn get_month_spent(&self) -> MonthSpentView {
@@ -615,26 +648,29 @@ impl Treasury {
         }
     }
 
-    /// Outstanding (`held`) hold amounts per fund, in `FUNDS` order.
-    fn held_by_fund(&self) -> [u128; 3] {
-        let mut held = [0u128; 3];
-        for (_, h) in self.holds.iter().filter(|(_, h)| h.status == HoldStatus::Held) {
-            if let Some(i) = FUNDS.iter().position(|f| *f == h.fund) {
-                held[i] = held[i].saturating_add(h.amount);
-            }
+    /// Approval re-check: the fund must still cover this hold once its own
+    /// reservation is set aside. Always true unless the ledger was changed by
+    /// something other than this contract's own flow; kept as a guard.
+    fn assert_hold_covered(&self, fund: &str, amount: u128) {
+        let mut ledger = self.ledger(fund);
+        ledger.held = ledger.held.saturating_sub(amount);
+        let available = ledger.available();
+        if amount > available {
+            env::panic_str(&format!(
+                "{ERR_INSUFFICIENT_FUND}: {fund} has {available} available, bill needs {amount}"
+            ));
         }
-        held
     }
 
-    fn fund_view(&self, fund: &str, held: &[u128; 3]) -> FundView {
+    fn fund_view(&self, fund: &str) -> FundView {
         let ledger = self.ledger(fund);
-        let i = FUNDS.iter().position(|f| *f == fund).unwrap_or_else(|| env::panic_str(ERR_INVALID_FUND));
         FundView {
             fund: fund.to_string(),
+            restriction: fund_restriction(fund).to_string(),
             received: U128(ledger.received),
             paid: U128(ledger.paid),
             available: U128(ledger.available()),
-            held: U128(held[i]),
+            held: U128(ledger.held),
         }
     }
 
@@ -648,8 +684,9 @@ impl Treasury {
         hold
     }
 
-    /// Records a `paid` payout, consumes cap and fund balance, and starts the
-    /// USDC transfer. Callers have already checked policy and fund balance.
+    /// Records a `paid` payout, consumes cap and fund balance (converting the
+    /// hold's reservation when `from_hold`), and starts the USDC transfer.
+    /// Callers have already checked policy and fund balance.
     fn pay(
         &mut self,
         bill_id: String,
@@ -667,6 +704,9 @@ impl Treasury {
             .unwrap_or_else(|| env::panic_str("monthly cap exceeded"));
         let mut ledger = self.ledger(&fund);
         ledger.paid = ledger.paid.checked_add(amount).unwrap_or_else(|| env::panic_str("fund paid overflow"));
+        if from_hold {
+            ledger.held = ledger.held.saturating_sub(amount);
+        }
         self.fund_ledger.insert(fund.clone(), ledger);
         self.payouts.insert(bill_id.clone(), Payout { vendor: vendor.clone(), amount, memo, fund });
         ext_ft::ext(self.usdc_token.clone())

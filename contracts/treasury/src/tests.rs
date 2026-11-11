@@ -723,28 +723,41 @@ fn fund_exact_balance_pays_and_holds() {
 }
 
 #[test]
-#[should_panic(expected = "insufficient fund balance")]
-fn fund_approve_hold_blocked_when_fund_used_since_hold() {
+fn fund_hold_reserves_available() {
     let mut c = init_unfunded();
     credit(&mut c, "building", 3 * LIMIT, "gift-b");
-    request_from(&mut c, 2 * LIMIT, "roof", "building"); // held, 3,000 still available
-    assert_eq!(fund(&c, "building").available, U128(3 * LIMIT));
-    // Two routine bills drain the fund to 1,000 before the treasurer approves.
+    request_from(&mut c, 2 * LIMIT, "roof", "building");
+    let b = fund(&c, "building");
+    assert_eq!((b.received, b.paid, b.held, b.available), (U128(3 * LIMIT), U128(0), U128(2 * LIMIT), U128(LIMIT)));
+    // The uncommitted 1,000 is still spendable.
     request_from(&mut c, LIMIT, "b1", "building");
-    request_from(&mut c, LIMIT, "b2", "building");
-    assert_eq!(fund(&c, "building").available, U128(LIMIT));
-    ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
-    c.approve_hold("roof".into());
+    assert_eq!(fund(&c, "building").available, U128(0));
 }
 
 #[test]
-fn fund_approve_blocked_leaves_hold_held_after_more_credit_it_pays() {
+#[should_panic(expected = "insufficient fund balance: building has 1000000000 available, bill needs 2000000000")]
+fn fund_second_hold_that_would_overcommit_is_refused_immediately() {
     let mut c = init_unfunded();
-    credit(&mut c, "building", 2 * LIMIT, "gift-b1");
+    credit(&mut c, "building", 3 * LIMIT, "gift-b");
     request_from(&mut c, 2 * LIMIT, "roof", "building");
-    request_from(&mut c, LIMIT, "b1", "building");
-    // A later gift tops the fund back up; approval now succeeds.
-    credit(&mut c, "building", LIMIT, "gift-b2");
+    // Same dollars again: refused at request time, not at approval.
+    request_from(&mut c, 2 * LIMIT, "roof-2", "building");
+}
+
+#[test]
+#[should_panic(expected = "insufficient fund balance: building has 0 available, bill needs 1")]
+fn fund_auto_pay_cannot_spend_reserved_hold_money() {
+    let mut c = init_unfunded();
+    credit(&mut c, "building", 2 * LIMIT, "gift-b");
+    request_from(&mut c, 2 * LIMIT, "roof", "building");
+    request_from(&mut c, 1, "nails", "building");
+}
+
+#[test]
+fn fund_approve_converts_held_to_paid() {
+    let mut c = init_unfunded();
+    credit(&mut c, "building", 2 * LIMIT, "gift-b");
+    request_from(&mut c, 2 * LIMIT, "roof", "building");
     ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
     c.approve_hold("roof".into());
     assert_eq!(ft_transfers(), vec![(usdc(), vendor(), 2 * LIMIT, ONE_YOCTO)]);
@@ -752,12 +765,28 @@ fn fund_approve_blocked_leaves_hold_held_after_more_credit_it_pays() {
         fund(&c, "building"),
         FundView {
             fund: "building".into(),
-            received: U128(3 * LIMIT),
-            paid: U128(3 * LIMIT),
+            restriction: "with donor restrictions".into(),
+            received: U128(2 * LIMIT),
+            paid: U128(2 * LIMIT),
             available: U128(0),
             held: U128(0),
         }
     );
+}
+
+#[test]
+#[should_panic(expected = "insufficient fund balance: building has 1000000000 available, bill needs 2000000000")]
+fn fund_approve_hold_rechecks_fund_defensively() {
+    let mut c = init_unfunded();
+    credit(&mut c, "building", 2 * LIMIT, "gift-b");
+    request_from(&mut c, 2 * LIMIT, "roof", "building");
+    // The contract's own flow cannot get here; simulate a ledger that no
+    // longer covers the reservation to prove approve_hold still re-checks.
+    let mut l = c.fund_ledger.get("building").cloned().unwrap();
+    l.paid = LIMIT;
+    c.fund_ledger.insert("building".into(), l);
+    ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
+    c.approve_hold("roof".into());
 }
 
 #[test]
@@ -779,22 +808,41 @@ fn fund_ledger_math_received_paid_available_held() {
     request_from(&mut c, LIMIT, "paid-1", "missions");
     request_from(&mut c, 2 * LIMIT, "held-1", "missions");
     request_from(&mut c, 3 * LIMIT, "held-2", "missions");
+    let m = fund(&c, "missions");
+    assert_eq!((m.held, m.available), (U128(5 * LIMIT), U128(0)), "both holds reserved");
     ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
     c.reject_hold("held-2".into());
 
+    let without = "without donor restrictions".to_string();
+    let with = "with donor restrictions".to_string();
     assert_eq!(
         c.get_fund_ledger(),
         vec![
-            FundView { fund: "general".into(), received: U128(7), paid: U128(0), available: U128(7), held: U128(0) },
+            FundView {
+                fund: "general".into(),
+                restriction: without,
+                received: U128(7),
+                paid: U128(0),
+                available: U128(7),
+                held: U128(0),
+            },
             FundView {
                 fund: "missions".into(),
+                restriction: with.clone(),
                 received: U128(6 * LIMIT),
                 paid: U128(LIMIT),
-                // Holds are shown but do not reduce available.
-                available: U128(5 * LIMIT),
+                // available = received - paid - held (uncommitted).
+                available: U128(3 * LIMIT),
                 held: U128(2 * LIMIT),
             },
-            FundView { fund: "building".into(), received: U128(0), paid: U128(0), available: U128(0), held: U128(0) },
+            FundView {
+                fund: "building".into(),
+                restriction: with,
+                received: U128(0),
+                paid: U128(0),
+                available: U128(0),
+                held: U128(0),
+            },
         ]
     );
 
@@ -805,14 +853,44 @@ fn fund_ledger_math_received_paid_available_held() {
 }
 
 #[test]
-fn fund_reject_hold_does_not_change_ledger() {
+fn fund_reject_hold_frees_reservation() {
     let mut c = init_unfunded();
     credit(&mut c, "general", 3 * LIMIT, "gift-g");
     request_from(&mut c, 2 * LIMIT, "big", "general");
+    assert_eq!(fund(&c, "general").available, U128(LIMIT));
     ctx(owner(), NOV_15 + ALLOWLIST_DELAY_NS);
     c.reject_hold("big".into());
     let g = fund(&c, "general");
+    // received and paid untouched; the reservation is released.
     assert_eq!((g.received, g.paid, g.available, g.held), (U128(3 * LIMIT), U128(0), U128(3 * LIMIT), U128(0)));
+    // The freed money can now back a new hold.
+    request_from(&mut c, 3 * LIMIT, "big-2", "general");
+}
+
+#[test]
+fn fund_restriction_labels() {
+    assert_eq!(fund_restriction("general"), "without donor restrictions");
+    assert_eq!(fund_restriction("missions"), "with donor restrictions");
+    assert_eq!(fund_restriction("building"), "with donor restrictions");
+    let c = init();
+    let labels: Vec<_> = c.get_fund_ledger().into_iter().map(|f| (f.fund, f.restriction)).collect();
+    assert_eq!(
+        labels,
+        vec![
+            ("general".into(), "without donor restrictions".into()),
+            ("missions".into(), "with donor restrictions".into()),
+            ("building".into(), "with donor restrictions".into()),
+        ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "insufficient fund balance: missions has 0 available")]
+fn fund_general_cannot_pay_a_missions_bill() {
+    // general is without donor restrictions, but funds are still siloed:
+    // using general money for missions would be an interfund transfer.
+    let mut c = init_with_vendor(); // general holds SEED
+    request_from(&mut c, 1, "trip", "missions");
 }
 
 #[test]
@@ -914,6 +992,12 @@ fn fund_failed_hold_transfer_restores_paid_and_held() {
     assert_eq!((b.paid, b.available, b.held), (U128(3 * LIMIT), U128(0), U128(0)));
     run_transfer_callback(&mut c, "roof", 3 * LIMIT, true, PromiseResult::Failed);
     let b = fund(&c, "building");
-    assert_eq!((b.paid, b.available, b.held), (U128(0), U128(3 * LIMIT), U128(3 * LIMIT)));
+    // paid restored; the hold is back to held, so its money is reserved again.
+    assert_eq!((b.paid, b.available, b.held), (U128(0), U128(0), U128(3 * LIMIT)));
+    // A competing bill cannot grab the re-reserved money.
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        request_from(&mut c, 1, "sneak", "building");
+    }));
+    assert!(r.is_err());
     assert_eq!(c.get_hold("roof".into()).unwrap().status, "held");
 }
