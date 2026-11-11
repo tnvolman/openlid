@@ -4,9 +4,9 @@ import { describe, it } from "node:test";
 import { createApi } from "./api.ts";
 import { DEFAULT_API_BASE, isMockMode, resolveApiBase } from "./config.ts";
 import { CSV_FILENAME, triggerCsvDownload } from "./csv.ts";
-import { createMockFetch, fixtureState } from "./fixtures.ts";
-import { formatUsdc, groupGiftsByFund } from "./format.ts";
-import { renderGifts, renderHolds, renderSummary } from "./render.ts";
+import { createMockFetch, fixtureState, summarize } from "./fixtures.ts";
+import { formatUsdc, friendlyError, groupGiftsByFund } from "./format.ts";
+import { renderGifts, renderHolds, renderPayouts, renderSummary } from "./render.ts";
 import { RECEIPT_NOTE, TESTNET_NOTICE } from "./types.ts";
 
 describe("formatUsdc", () => {
@@ -66,8 +66,8 @@ describe("gift grouping", () => {
 describe("holds", () => {
   it("renders approve and reject buttons for held bills only", () => {
     const html = renderHolds([
-      { bill_id: "b1", vendor: "v.testnet", amount: "1", memo: "", status: "held" },
-      { bill_id: "b2", vendor: "v.testnet", amount: "1", memo: "", status: "approved" },
+      { bill_id: "b1", vendor: "v.testnet", amount: "1", memo: "", fund: "missions", status: "held" },
+      { bill_id: "b2", vendor: "v.testnet", amount: "1", memo: "", fund: "general", status: "approved" },
     ]);
     assert.match(html, /data-action="approve" data-bill-id="b1"/);
     assert.match(html, /data-action="reject" data-bill-id="b1"/);
@@ -124,9 +124,66 @@ describe("API client targets INTERFACES.md routes", () => {
   it("summary from the fixture matches the contract shape", async () => {
     const s = await createApi("", createMockFetch()).summary();
     assert.equal(s.receiptNote, RECEIPT_NOTE);
-    assert.equal(s.giftsByFund.general.settledAmount, "100000000");
+    assert.deepEqual(s.giftsByFund.general, { count: 1, received: "100000000", paidOut: "0", held: "90000000", available: "100000000" });
     assert.equal(s.holds.heldCount, 1);
-    assert.match(renderSummary(s), /4,200\.00 USDC/);
+    assert.match(renderSummary(s), /90\.00 USDC/);
+  });
+});
+
+describe("per-fund accounting", () => {
+  const cells = (html: string, fund: string) =>
+    [...html.match(new RegExp(`<tr data-fund="${fund}">([\\s\\S]*?)</tr>`))![1].matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((m) => m[1]);
+
+  it("summary table has Fund / Gifts / Received / Paid out / Available and the live balance line", async () => {
+    const s = await createApi("", createMockFetch()).summary();
+    const html = renderSummary({ ...s, treasuryBalance: "230000000" });
+    const heads = [...html.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
+    assert.deepEqual(heads, ["Fund", "Gifts", "Received", "Paid out", "Available"]);
+    assert.ok(!html.includes(">Settled<"));
+    assert.match(html, /Treasury balance \(live, on-chain\): <strong>230\.00 USDC<\/strong>/);
+    // Only settled gifts count; building paid the 180 USDC electric bill out of its 250 USDC.
+    assert.deepEqual(cells(html, "general"), ["general", "1", "100.00 USDC", "0.00 USDC", "100.00 USDC"]);
+    assert.deepEqual(cells(html, "missions"), ["missions", "1", "60.00 USDC", "0.00 USDC", "60.00 USDC"]);
+    assert.deepEqual(cells(html, "building"), ["building", "1", "250.00 USDC", "180.00 USDC", "70.00 USDC"]);
+  });
+
+  it("fixture bills each fit their fund", () => {
+    const st = fixtureState();
+    const s = summarize(st);
+    for (const f of ["general", "missions", "building"] as const) {
+      const row = s.giftsByFund[f];
+      assert.equal(BigInt(row.available), BigInt(row.received) - BigInt(row.paidOut));
+      assert.ok(BigInt(row.available) >= 0n, f);
+      assert.ok(BigInt(row.held) <= BigInt(row.available), `${f} holds are approvable`);
+    }
+    assert.equal(st.payouts[0].fund, "building");
+  });
+
+  it("payouts and holds tables show the Fund column", () => {
+    const { payouts, holds } = fixtureState();
+    const p = renderPayouts(payouts);
+    assert.match(p, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th>/);
+    assert.match(p, /<code>bill-electric-001<\/code><\/td><td>building<\/td>/);
+    const h = renderHolds(holds);
+    assert.match(h, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th>/);
+    assert.match(h, /<code>bill-roof-002<\/code><\/td><td>general<\/td>/);
+  });
+
+  it("approve blocked by the fund surfaces a clear error and leaves the hold held", async () => {
+    const f = createMockFetch();
+    f.state.holds[0] = { ...f.state.holds[0], fund: "building", amount: "200000000" };
+    const api = createApi("", f);
+    await assert.rejects(api.approveHold("bill-roof-002"), (err: Error) => {
+      assert.match(err.message, /insufficient fund balance: building has 70000000 available, bill needs 200000000/);
+      assert.equal(
+        friendlyError(err.message),
+        "Not enough in the building fund: 70.00 USDC available, this bill needs 200.00 USDC. Other funds cannot pay it.",
+      );
+      return true;
+    });
+    assert.equal(f.state.holds[0].status, "held");
+    assert.equal((await api.payouts()).length, 1);
+    assert.equal(friendlyError("contract rejected: monthly cap exceeded"), "contract rejected: monthly cap exceeded");
   });
 });
 

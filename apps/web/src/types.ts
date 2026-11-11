@@ -27,6 +27,7 @@ export interface PayoutView {
   vendor: string;
   amount: string;
   memo: string;
+  fund: Fund;
   status: "paid";
 }
 
@@ -35,12 +36,21 @@ export interface HoldView {
   vendor: string;
   amount: string;
   memo: string;
+  fund: Fund;
   status: "held" | "approved" | "rejected";
 }
 
+/** Per-fund summary. `available = received - paidOut`; outstanding holds do not reduce it. */
 export interface FundSummary {
-  settledAmount: string;
+  /** Settled gift count. */
   count: number;
+  /** Settled gift amounts. */
+  received: string;
+  /** Paid payouts from this fund. */
+  paidOut: string;
+  /** Outstanding (held) holds on this fund. */
+  held: string;
+  available: string;
 }
 
 export interface Summary {

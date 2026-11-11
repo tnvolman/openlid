@@ -3,6 +3,7 @@ import type { Api } from "./api.ts";
 import { isMockMode, resolveApiBase } from "./config.ts";
 import { triggerCsvDownload } from "./csv.ts";
 import { createMockFetch } from "./fixtures.ts";
+import { friendlyError } from "./format.ts";
 import { renderGifts, renderHolds, renderPayouts, renderSummary } from "./render.ts";
 import { RECEIPT_NOTE, TESTNET_NOTICE } from "./types.ts";
 
@@ -26,7 +27,7 @@ function showError(err: unknown) {
     return;
   }
   el.hidden = false;
-  el.textContent = `Error: ${err instanceof Error ? err.message : String(err)}`;
+  el.textContent = `Error: ${friendlyError(err instanceof Error ? err.message : String(err))}`;
 }
 
 async function load() {

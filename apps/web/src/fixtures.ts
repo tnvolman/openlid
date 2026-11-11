@@ -4,7 +4,7 @@
 // no keys, no real wallets, no mainnet anything.
 import type { FetchLike } from "./api.ts";
 import { FUNDS, RECEIPT_NOTE } from "./types.ts";
-import type { Gift, HoldView, PayoutView, Summary } from "./types.ts";
+import type { Fund, Gift, HoldView, PayoutView, Summary } from "./types.ts";
 
 const gift = (id: string, donor: string, fund: Gift["fund"], amountOut: string, status: Gift["status"]): Gift => ({
   id,
@@ -31,11 +31,13 @@ export function fixtureState() {
       gift("g2", "donor-demo-2", "missions", "60000000", "settled"),
       gift("g1", "donor-demo-1", "general", "100000000", "settled"),
     ] as Gift[],
+    // Every bill names a fund and fits it: building received 250, paid 180 (electric for the building).
+    // The general-fund hold (90 of 100 available) can be approved; see fund math in summarize().
     payouts: [
-      { bill_id: "bill-electric-001", vendor: "power-co.demo.testnet", amount: "180000000", memo: "Electric, October", status: "paid" },
+      { bill_id: "bill-electric-001", vendor: "power-co.demo.testnet", amount: "180000000", memo: "Electric, October", fund: "building", status: "paid" },
     ] as PayoutView[],
     holds: [
-      { bill_id: "bill-roof-002", vendor: "roofer.demo.testnet", amount: "4200000000", memo: "Roof repair deposit", status: "held" },
+      { bill_id: "bill-roof-002", vendor: "roofer.demo.testnet", amount: "90000000", memo: "Roof repair deposit", fund: "general", status: "held" },
     ] as HoldView[],
   };
 }
@@ -44,15 +46,32 @@ export type FixtureState = ReturnType<typeof fixtureState>;
 
 const sum = (xs: string[]) => xs.reduce((a, b) => a + BigInt(b), 0n).toString();
 
+/** Fund balance as the contract computes it: settled gifts received minus payouts paid. */
+export function available(s: FixtureState, fund: Fund): bigint {
+  const received = sum(s.gifts.filter((g) => g.fund === fund && g.status === "settled").map((g) => g.amountOut));
+  const paid = sum(s.payouts.filter((p) => p.fund === fund).map((p) => p.amount));
+  return BigInt(received) - BigInt(paid);
+}
+
 export function summarize(s: FixtureState): Summary {
+  const held = s.holds.filter((h) => h.status === "held");
   const giftsByFund = Object.fromEntries(
     FUNDS.map((f) => {
-      const inFund = s.gifts.filter((g) => g.fund === f);
-      const settled = inFund.filter((g) => g.status === "settled");
-      return [f, { settledAmount: sum(settled.map((g) => g.amountOut)), count: inFund.length }];
+      const settled = s.gifts.filter((g) => g.fund === f && g.status === "settled");
+      const received = sum(settled.map((g) => g.amountOut));
+      const paidOut = sum(s.payouts.filter((p) => p.fund === f).map((p) => p.amount));
+      return [
+        f,
+        {
+          count: settled.length,
+          received,
+          paidOut,
+          held: sum(held.filter((h) => h.fund === f).map((h) => h.amount)),
+          available: (BigInt(received) - BigInt(paidOut)).toString(),
+        },
+      ];
     }),
   ) as Summary["giftsByFund"];
-  const held = s.holds.filter((h) => h.status === "held");
   return {
     giftsByFund,
     payouts: { paidCount: s.payouts.length, paidAmount: sum(s.payouts.map((p) => p.amount)) },
@@ -64,7 +83,7 @@ export function summarize(s: FixtureState): Summary {
 export function fixtureCsv(s: FixtureState): string {
   const lines = [`# ${RECEIPT_NOTE}`, "type,id,party,fund,amount,status"];
   for (const g of s.gifts) lines.push(`gift,${g.id},${g.donor},${g.fund},${g.amountOut},${g.status}`);
-  for (const p of s.payouts) lines.push(`payout,${p.bill_id},${p.vendor},,${p.amount},${p.status}`);
+  for (const p of s.payouts) lines.push(`payout,${p.bill_id},${p.vendor},${p.fund},${p.amount},${p.status}`);
   return lines.join("\n") + "\n";
 }
 
@@ -97,8 +116,15 @@ export function createMockFetch(state: FixtureState = fixtureState()): FetchLike
       if (!hold) return json(404, { error: `no hold ${billId}` });
       if (hold.status !== "held") return json(409, { error: `hold ${billId} is ${hold.status}` });
       if (m[2] === "approve") {
+        // Same re-check (and message) as the contract's approve_hold.
+        const avail = available(state, hold.fund);
+        if (BigInt(hold.amount) > avail) {
+          return json(422, {
+            error: `contract rejected: insufficient fund balance: ${hold.fund} has ${avail} available, bill needs ${hold.amount}`,
+          });
+        }
         hold.status = "approved";
-        state.payouts.unshift({ bill_id: hold.bill_id, vendor: hold.vendor, amount: hold.amount, memo: hold.memo, status: "paid" });
+        state.payouts.unshift({ bill_id: hold.bill_id, vendor: hold.vendor, amount: hold.amount, memo: hold.memo, fund: hold.fund, status: "paid" });
       } else {
         hold.status = "rejected";
       }

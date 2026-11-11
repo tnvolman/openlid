@@ -9,8 +9,10 @@ const short = (s: string) => (s.length > 18 ? `${s.slice(0, 8)}…${s.slice(-6)}
 
 export function renderSummary(s: Summary): string {
   const fundRows = FUNDS.map((f) => {
-    const row = s.giftsByFund?.[f] ?? { settledAmount: "0", count: 0 };
-    return `<tr><td>${f}</td><td class="num">${row.count}</td><td class="num">${formatUsdc(row.settledAmount)}</td></tr>`;
+    const row = s.giftsByFund?.[f] ?? { count: 0, received: "0", paidOut: "0", held: "0", available: "0" };
+    return `<tr data-fund="${f}"><td>${f}</td><td class="num">${row.count}</td>
+      <td class="num">${formatUsdc(row.received)}</td><td class="num">${formatUsdc(row.paidOut)}</td>
+      <td class="num">${formatUsdc(row.available)}</td></tr>`;
   }).join("");
   const balance =
     s.treasuryBalance != null
@@ -18,7 +20,7 @@ export function renderSummary(s: Summary): string {
       : "";
   return `${balance}
     <table>
-      <thead><tr><th>Fund</th><th class="num">Gifts</th><th class="num">Settled</th></tr></thead>
+      <thead><tr><th>Fund</th><th class="num">Gifts</th><th class="num">Received</th><th class="num">Paid out</th><th class="num">Available</th></tr></thead>
       <tbody>${fundRows}</tbody>
     </table>
     <p>Payouts paid: <strong>${s.payouts.paidCount}</strong> (${formatUsdc(s.payouts.paidAmount)})
@@ -31,7 +33,7 @@ export function renderHolds(holds: HoldView[]): string {
   const rows = held
     .map(
       (h) => `<tr data-bill-id="${e(h.bill_id)}">
-        <td><code>${e(h.bill_id)}</code></td><td>${e(h.vendor)}</td>
+        <td><code>${e(h.bill_id)}</code></td><td>${e(h.fund)}</td><td>${e(h.vendor)}</td>
         <td class="num">${formatUsdc(h.amount)}</td><td>${e(h.memo)}</td><td>${status(h.status)}</td>
         <td>
           <button type="button" data-action="approve" data-bill-id="${e(h.bill_id)}">Approve</button>
@@ -40,7 +42,7 @@ export function renderHolds(holds: HoldView[]): string {
     )
     .join("");
   return `<table>
-    <thead><tr><th>Bill</th><th>Vendor</th><th class="num">Amount</th><th>Memo</th><th>Status</th><th>Treasurer</th></tr></thead>
+    <thead><tr><th>Bill</th><th>Fund</th><th>Vendor</th><th class="num">Amount</th><th>Memo</th><th>Status</th><th>Treasurer</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
 
@@ -48,12 +50,12 @@ export function renderPayouts(payouts: PayoutView[]): string {
   if (payouts.length === 0) return empty("No payouts yet.");
   const rows = payouts
     .map(
-      (p) => `<tr><td><code>${e(p.bill_id)}</code></td><td>${e(p.vendor)}</td>
+      (p) => `<tr><td><code>${e(p.bill_id)}</code></td><td>${e(p.fund)}</td><td>${e(p.vendor)}</td>
         <td class="num">${formatUsdc(p.amount)}</td><td>${e(p.memo)}</td><td>${status(p.status)}</td></tr>`,
     )
     .join("");
   return `<table>
-    <thead><tr><th>Bill</th><th>Vendor</th><th class="num">Amount</th><th>Memo</th><th>Status</th></tr></thead>
+    <thead><tr><th>Bill</th><th>Fund</th><th>Vendor</th><th class="num">Amount</th><th>Memo</th><th>Status</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
 

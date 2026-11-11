@@ -44,3 +44,16 @@ export function escapeHtml(s: unknown): string {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 }
+
+const INSUFFICIENT_FUND = /insufficient fund balance: (\w+) has (\d+) available, bill needs (\d+)/;
+
+/**
+ * Turn an API error into treasurer-readable text. The contract's insufficient-fund panic carries
+ * atomic units; show them as USDC and name the fund. Other messages pass through unchanged.
+ */
+export function friendlyError(message: string): string {
+  const m = INSUFFICIENT_FUND.exec(message);
+  if (!m) return message;
+  const [, fund, avail, needed] = m;
+  return `Not enough in the ${fund} fund: ${formatUsdc(avail)} available, this bill needs ${formatUsdc(needed)}. Other funds cannot pay it.`;
+}
