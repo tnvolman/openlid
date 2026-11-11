@@ -27,6 +27,8 @@ export interface NearContractClient {
   listHolds(status?: HoldStatus): Promise<HoldView[]>;
   approveHold(billId: string): Promise<void>;
   rejectHold(billId: string): Promise<void>;
+  /** Live USDC balance held by the treasury contract (smallest units), or null if unknown. */
+  treasuryBalance?(): Promise<string | null>;
 }
 
 /** The contract panicked (unauthorized, unknown vendor, cap exceeded, duplicate bill, ...). Maps to 4xx. */
@@ -119,6 +121,8 @@ export interface NearRpcClientOptions {
   agentKeyFile: string;
   ownerAccountId?: string;
   ownerKeyFile?: string;
+  /** USDC (or test FT) token contract, for the live treasury balance. */
+  usdcTokenId?: string;
 }
 
 export function defaultRpcUrl(network: string): string {
@@ -232,6 +236,20 @@ export class NearRpcContractClient implements NearContractClient {
 
   getHold(billId: string): Promise<HoldView | null> {
     return this.view<HoldView | null>('get_hold', { bill_id: billId }).then((v) => v ?? null);
+  }
+
+  async treasuryBalance(): Promise<string | null> {
+    if (!this.opts.usdcTokenId) return null;
+    try {
+      const v = (await this.provider.callFunction({
+        contractId: this.opts.usdcTokenId,
+        method: 'ft_balance_of',
+        args: { account_id: this.opts.contractId },
+      })) as string | null;
+      return typeof v === 'string' ? v : null;
+    } catch (err) {
+      throw classifyNearError(err);
+    }
   }
 
   listHolds(status?: HoldStatus): Promise<HoldView[]> {

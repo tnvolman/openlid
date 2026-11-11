@@ -336,8 +336,15 @@ export function createApp(deps: AppDeps): Hono {
       if (!(err instanceof NearUnavailableError)) throw err;
       holds = { heldCount: 0, heldAmount: '0', available: false };
     }
+    let treasuryBalance: string | null = null;
+    try {
+      treasuryBalance = (await near.treasuryBalance?.()) ?? null;
+    } catch (err) {
+      if (!(err instanceof NearUnavailableError)) throw err;
+    }
     return c.json({
       giftsByFund,
+      treasuryBalance,
       payouts: { paidCount: paid.length, paidAmount: sumAmounts(paid.map((p) => p.amount)) },
       holds,
       receiptNote: RECEIPT_NOTE,

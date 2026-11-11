@@ -12,7 +12,11 @@ export function renderSummary(s: Summary): string {
     const row = s.giftsByFund?.[f] ?? { settledAmount: "0", count: 0 };
     return `<tr><td>${f}</td><td class="num">${row.count}</td><td class="num">${formatUsdc(row.settledAmount)}</td></tr>`;
   }).join("");
-  return `
+  const balance =
+    s.treasuryBalance != null
+      ? `<p class="balance">Treasury balance (live, on-chain): <strong>${formatUsdc(s.treasuryBalance)}</strong></p>`
+      : "";
+  return `${balance}
     <table>
       <thead><tr><th>Fund</th><th class="num">Gifts</th><th class="num">Settled</th></tr></thead>
       <tbody>${fundRows}</tbody>

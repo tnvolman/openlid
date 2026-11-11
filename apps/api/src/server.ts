@@ -32,6 +32,7 @@ if (config.contractId && config.agentAccountId && agentKeyFile) {
     agentKeyFile,
     ownerAccountId: config.ownerAccountId,
     ownerKeyFile,
+    usdcTokenId: config.usdcTokenId,
   });
 } else {
   near = new UnconfiguredNearClient(

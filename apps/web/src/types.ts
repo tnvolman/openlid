@@ -45,6 +45,8 @@ export interface FundSummary {
 
 export interface Summary {
   giftsByFund: Record<Fund, FundSummary>;
+  /** Live on-chain treasury balance; null when the API can't read it. */
+  treasuryBalance?: string | null;
   payouts: { paidCount: number; paidAmount: string };
   holds: { heldCount: number; heldAmount: string };
   receiptNote: string;

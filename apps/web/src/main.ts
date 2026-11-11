@@ -47,13 +47,19 @@ $("holds").addEventListener("click", async (ev) => {
   const billId = btn.dataset.billId!;
   const action = btn.dataset.action as "approve" | "reject";
   if (!confirm(`${action === "approve" ? "Approve and pay" : "Reject"} bill ${billId}?`)) return;
-  btn.disabled = true;
+  // On-chain approve/reject waits for NEAR finality (often 20-30 s): show progress and block double clicks.
+  const row = btn.closest("td");
+  const rowButtons = Array.from(row?.querySelectorAll("button") ?? [btn]) as HTMLButtonElement[];
+  const label = btn.textContent;
+  rowButtons.forEach((b) => (b.disabled = true));
+  btn.textContent = action === "approve" ? "Paying… waiting for the blockchain" : "Rejecting… waiting for the blockchain";
   try {
     await (action === "approve" ? api.approveHold(billId) : api.rejectHold(billId));
     await load();
   } catch (err) {
     showError(err);
-    btn.disabled = false;
+    btn.textContent = label;
+    rowButtons.forEach((b) => (b.disabled = false));
   }
 });
 
