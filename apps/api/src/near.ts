@@ -56,13 +56,59 @@ export class NearUnavailableError extends Error {
 
 const PANIC_RE = /Smart contract panicked:\s*(.*)/s;
 
-/** Turn a near-api-js failure into ContractRejectedError when it is a contract panic / execution error. */
+/**
+ * HTTP / JSON-RPC status on a near-api-js or fetch failure: JSON-RPC -429, HTTP 429,
+ * or HTTP 5xx. near-api-js puts the HTTP status in `cause` (ProviderError) and uses
+ * type `RetriesExceeded` after retrying 5xx.
+ */
+function rpcStatus(err: unknown): number | undefined {
+  const seen = new Set<unknown>();
+  const visit = (v: unknown, depth: number): number | undefined => {
+    if (v == null || depth > 5 || seen.has(v)) return undefined;
+    if (typeof v === 'number') {
+      if (v === -429 || v === 429 || (v >= 500 && v <= 599)) return v;
+      return undefined;
+    }
+    if (typeof v !== 'object') return undefined;
+    seen.add(v);
+    const o = v as Record<string, unknown>;
+    for (const key of ['code', 'cause', 'status', 'statusCode', 'httpStatus', 'status_code']) {
+      const raw = o[key];
+      const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^-?\d+$/.test(raw) ? Number(raw) : undefined;
+      if (n === -429 || n === 429 || (n !== undefined && n >= 500 && n <= 599)) return n;
+    }
+    if (o.cause && typeof o.cause === 'object') {
+      const nested = visit(o.cause, depth + 1);
+      if (nested !== undefined) return nested;
+    }
+    if (o.error && typeof o.error === 'object') {
+      const nested = visit(o.error, depth + 1);
+      if (nested !== undefined) return nested;
+    }
+    return undefined;
+  };
+  return visit(err, 0);
+}
+
+function isRpcOutage(err: unknown, msg: string, type: string, name: string): boolean {
+  if (rpcStatus(err) !== undefined) return true;
+  if (/RetriesExceeded/i.test(`${type} ${name}`)) return true;
+  if (/(?:^|[^\d-])-429(?:[^\d]|$)/.test(msg)) return true;
+  if (/\b(rate\s*-?limit(?:ed|ing)?|too many requests|different rpc provider)\b/i.test(msg)) return true;
+  if (/\bdeprecated\b/i.test(msg) && /\brpc\b/i.test(msg)) return true;
+  return false;
+}
+
+/** Turn a near-api-js failure into ContractRejectedError or NearUnavailableError when we can classify it. */
 export function classifyNearError(err: unknown): Error {
   const e = err as { message?: unknown; type?: unknown; name?: unknown };
   const msg = typeof e?.message === 'string' ? e.message : String(err);
   const m = PANIC_RE.exec(msg);
   if (m) return new ContractRejectedError(m[1]!.trim().split('\n')[0]!);
   const kind = `${String(e?.type ?? '')} ${String(e?.name ?? '')}`;
+  if (isRpcOutage(err, msg, String(e?.type ?? ''), String(e?.name ?? ''))) {
+    return new NearUnavailableError('NEAR RPC is unavailable');
+  }
   if (/FunctionCall|ExecutionError|ActionError|MethodNotFound/i.test(kind)) {
     return new ContractRejectedError(msg);
   }

@@ -45,12 +45,18 @@ export function escapeHtml(s: unknown): string {
     .replaceAll("'", "&#39;");
 }
 
-/** ISO 8601 timestamp as "2026-11-11 14:05 UTC"; "—" when missing or unparseable. */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** ISO 8601 timestamp as a short UTC display, e.g. "11 Nov 14:05 UTC"; "—" when missing or unparseable. */
 export function formatTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  const day = d.getUTCDate();
+  const mon = MONTHS[d.getUTCMonth()];
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${day} ${mon} ${hh}:${mm} UTC`;
 }
 
 /** Signed atomic-unit difference as USDC, e.g. "-9.95 USDC". */

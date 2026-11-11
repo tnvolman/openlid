@@ -3,7 +3,7 @@ import type { Api } from "./api.ts";
 import { isMockMode, resolveApiBase } from "./config.ts";
 import { triggerCsvDownload } from "./csv.ts";
 import { createMockFetch } from "./fixtures.ts";
-import { friendlyError } from "./format.ts";
+import { load, showError, type PageEls } from "./load.ts";
 import { renderGifts, renderHolds, renderPayouts, renderSummary } from "./render.ts";
 import { RECEIPT_NOTE, TESTNET_NOTICE } from "./types.ts";
 
@@ -19,28 +19,20 @@ $("mode-badge").hidden = !mock;
 $("receipt-note").textContent = RECEIPT_NOTE;
 $("testnet-notice").textContent = TESTNET_NOTICE;
 
-function showError(err: unknown) {
-  const el = $("error");
-  if (err == null) {
-    el.hidden = true;
-    el.textContent = "";
-    return;
-  }
-  el.hidden = false;
-  el.textContent = `Error: ${friendlyError(err instanceof Error ? err.message : String(err))}`;
-}
+const els: PageEls = {
+  refreshBtn: $("refresh") as HTMLButtonElement,
+  error: $("error"),
+  summary: $("summary"),
+  holds: $("holds"),
+  payouts: $("payouts"),
+  gifts: $("gifts"),
+  updated: $("updated") as PageEls["updated"],
+};
 
-async function load() {
-  showError(null);
-  const results = await Promise.allSettled([api.summary(), api.heldHolds(), api.payouts(), api.gifts()]);
-  const [summary, holds, payouts, gifts] = results;
-  $("summary").innerHTML = summary.status === "fulfilled" ? renderSummary(summary.value) : "Unavailable.";
-  $("holds").innerHTML = holds.status === "fulfilled" ? renderHolds(holds.value) : "Unavailable.";
-  $("payouts").innerHTML = payouts.status === "fulfilled" ? renderPayouts(payouts.value) : "Unavailable.";
-  $("gifts").innerHTML = gifts.status === "fulfilled" ? renderGifts(gifts.value) : "Unavailable.";
-  $("updated").textContent = ` · updated ${new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
-  const failed = results.find((r) => r.status === "rejected");
-  if (failed) showError((failed as PromiseRejectedResult).reason);
+const render = { renderSummary, renderHolds, renderPayouts, renderGifts };
+
+async function reload() {
+  await load(api, els, render);
 }
 
 $("holds").addEventListener("click", async (ev) => {
@@ -57,9 +49,9 @@ $("holds").addEventListener("click", async (ev) => {
   btn.textContent = action === "approve" ? "Paying… waiting for the blockchain" : "Rejecting… waiting for the blockchain";
   try {
     await (action === "approve" ? api.approveHold(billId) : api.rejectHold(billId));
-    await load();
+    await reload();
   } catch (err) {
-    showError(err);
+    showError(els.error, err);
     btn.textContent = label;
     rowButtons.forEach((b) => (b.disabled = false));
   }
@@ -76,6 +68,6 @@ $("download-csv").addEventListener("click", async () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 
-$("refresh").addEventListener("click", () => void load());
+$("refresh").addEventListener("click", () => void reload());
 
-void load();
+void reload();

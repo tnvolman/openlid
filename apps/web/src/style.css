@@ -2,20 +2,22 @@
 
 /* Base */
 *, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font-ui); -webkit-font-smoothing: antialiased; }
-.wrap { max-width: 1120px; margin: 0 auto; padding: 0 32px; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 var(--font-ui); -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 32px; min-width: 0; }
 h1, h2, h3 { text-wrap: balance; }
 p { margin: 0; }
 code, .mono { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 .nowrap { white-space: nowrap; }
 .cap { text-transform: capitalize; }
-.m-only { display: none; }
+.m-only, .t-only { display: none; }
 [hidden] { display: none !important; }
 
 /* Header: color lockup, quiet demo pill */
 .site-header { border-bottom: 1px solid var(--line); }
 .bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 88px; }
 .brand { position: relative; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.lockup-link { display: block; line-height: 0; color: inherit; text-decoration: none; border-radius: 4px; }
+.lockup-link:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .lockup { display: block; height: 44px; width: auto; }
 /* Visually hidden label keeps the existing wordmark text for screen readers and tests */
 .wordmark {
@@ -53,7 +55,7 @@ h1 { font-family: var(--font-display); font-weight: 500; font-size: 34px; letter
 .kpis { display: flex; gap: 16px; }
 .kpi { flex: 1 1 0; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
 .kpi-label { font-size: 12px; color: var(--stone); text-transform: uppercase; letter-spacing: 0.06em; }
-.kpi-num { font-family: var(--font-mono); font-size: 26px; font-weight: 500; margin-top: 8px; line-height: 1.25; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kpi-num { font-family: var(--font-mono); font-size: 26px; font-weight: 500; margin-top: 8px; line-height: 1.25; font-variant-numeric: tabular-nums; white-space: normal; overflow: hidden; }
 .unit { font-size: 14px; color: var(--stone); font-weight: 500; }
 .kpi-note { margin-top: 10px; font-size: 13px; color: var(--stone); text-wrap: pretty; }
 .kpi-note + .recon { margin-top: 6px; }
@@ -82,14 +84,14 @@ td.num, th.num { text-align: right; }
 td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .funds td.fund-name { text-transform: capitalize; }
 .funds td.restriction { color: var(--stone); font-size: 14px; }
-.empty { color: var(--stone); background: var(--card); border: 1px dashed var(--line-strong); border-radius: var(--radius); padding: 16px 20px; }
+.empty { color: var(--stone); background: var(--card); border: 1px dashed var(--line-strong); border-radius: var(--radius); padding: 20px 24px; }
 
 /* Bill rows: memo as the name, bill id on a mono meta line */
-td.bill { min-width: 180px; }
+td.bill { min-width: 0; }
 .bill-name { display: block; }
 .bill-to { display: block; color: var(--stone); font-size: 13px; overflow-wrap: anywhere; }
 td code { white-space: nowrap; }
-.bill-meta.m-only { display: none; }
+.bill-meta.m-only, .t-only { display: none; }
 .bill-meta { display: block; font-family: var(--font-mono); font-size: 13px; color: var(--stone); margin-top: 2px; }
 .bill-meta code { color: inherit; }
 .holds td:nth-child(2), .payouts td:nth-child(2) { text-transform: capitalize; }
@@ -166,3 +168,405 @@ th.actions { text-align: right; }
   .gifts th:nth-child(n+4), .gifts td.deposit, .gifts td.origin { display: none; }
   .gifts td.donor { font-size: 12px; }
 }
+
+/* --------------------------------------------------------------------------
+   Shared overflow defense (audit B1–B4). Cards and tables stay inside the
+   wrap; min-content must not inflate the page. Fixed table layout + ellipsis
+   on refs and hashes. Bill titles clamp to 2 lines (Lily, 1280+ and phone).
+   -------------------------------------------------------------------------- */
+main,
+section,
+#summary,
+#holds,
+#payouts,
+#gifts,
+.table-card,
+.kpi,
+td.bill,
+td.donor,
+td.origin,
+td.restriction {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.table-card {
+  overflow-x: auto; /* fallback only; after these rules, no scrollbar at 1280+ */
+  max-width: 100%;
+}
+
+.table-card table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+/* Long ids, refs, hashes, vendors, donors, origins: one-line ellipsis.
+   Markup sets title="…" on the truncated node. Bill titles are 2-line clamped. */
+.bill-to,
+.bill-meta,
+td.donor,
+td.origin,
+td.restriction,
+.gifts td.deposit,
+td code,
+.holds td:nth-child(6),
+.holds td:nth-child(7),
+.payouts td:nth-child(6),
+.payouts td:nth-child(7),
+.payouts td:nth-child(8) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.bill-name,
+.bill-to,
+.bill-meta {
+  display: block;
+}
+
+/* Re-assert: the block display on .bill-meta must not un-hide breakpoint-only lines. */
+.m-only,
+.t-only {
+  display: none;
+}
+
+/* 2-line clamp on bill titles at every width, including 1280 and up. */
+.bill-name {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+td code,
+.gifts td.deposit code,
+.bill-meta code {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+td.num,
+th.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------------------
+   Desktop, 1024px and up (1280 / 1440 / 1920). Content width is 1056px
+   because .wrap is max-width: 1120px with 32px padding — same at all three.
+   Keep Status and Treasurer (Approve/Reject) visible. Truncate refs; do not
+   hide those action/status columns. Amount is a fixed 232px so
+   "1,234,567.89 USDC" never collides with the next column.
+   -------------------------------------------------------------------------- */
+@media (min-width: 1024px) {
+  .holds th:nth-child(1), .holds td:nth-child(1) { width: auto; }
+  .holds th:nth-child(2), .holds td:nth-child(2) { width: 88px; }
+  .holds th:nth-child(4), .holds td:nth-child(4) { width: 248px; }
+  .holds th:nth-child(6), .holds td:nth-child(6) { width: 152px; }
+  .holds th:nth-child(7), .holds td:nth-child(7) { width: 96px; }
+  .holds th:nth-child(8), .holds td:nth-child(8) { width: 80px; }
+  .holds th:nth-child(9), .holds td.actions {
+    width: 196px;
+    white-space: nowrap;
+  }
+
+  .payouts th:nth-child(1), .payouts td:nth-child(1) { width: auto; }
+  .payouts th:nth-child(2), .payouts td:nth-child(2) { width: 88px; }
+  .payouts th:nth-child(4), .payouts td:nth-child(4) { width: 248px; }
+  .payouts th:nth-child(6), .payouts td:nth-child(6) { width: 152px; }
+  .payouts th:nth-child(7), .payouts td:nth-child(7) { width: 152px; }
+  .payouts th:nth-child(8), .payouts td:nth-child(8) { width: 96px; }
+  .payouts th:nth-child(9), .payouts td:nth-child(9) { width: 80px; }
+
+  td.num { overflow: hidden; text-overflow: ellipsis; }
+
+  .gifts th:nth-child(1), .gifts td:nth-child(1) { width: 26%; }
+  .gifts th:nth-child(2), .gifts td:nth-child(2) { width: 16%; }
+  .gifts th:nth-child(3), .gifts td:nth-child(3) { width: 12%; }
+  .gifts th:nth-child(4), .gifts td:nth-child(4) { width: 26%; }
+  .gifts th:nth-child(5), .gifts td:nth-child(5) { width: 20%; }
+
+  .funds td.num { overflow: hidden; text-overflow: ellipsis; }
+}
+
+/* --------------------------------------------------------------------------
+   Tablet, 701–1023px (includes 768). Existing phone rules only start at 700px.
+   -------------------------------------------------------------------------- */
+@media (min-width: 701px) and (max-width: 1023px) {
+  .wrap { padding: 0 24px; }
+
+  .kpis { flex-wrap: wrap; gap: 12px; }
+  .kpi { flex: 1 1 calc(50% - 6px); }
+  .kpi-num { font-size: 22px; }
+  .kpi-num .unit { display: block; font-size: 13px; margin-top: 2px; }
+
+  .t-only { display: block; }
+
+  /* Holds: Bill, Amount, Status, Treasurer.
+     Hide Fund (2), Requested (6), Request ref (7). Vendor/Memo already hidden. */
+  .holds th:nth-child(2), .holds td:nth-child(2),
+  .holds th:nth-child(6), .holds td:nth-child(6),
+  .holds th:nth-child(7), .holds td:nth-child(7) { display: none; }
+
+  .holds th:nth-child(1), .holds td:nth-child(1) { width: auto; }
+  .holds th:nth-child(4), .holds td:nth-child(4) { width: 248px; }
+  .holds th:nth-child(8), .holds td:nth-child(8) { width: 80px; }
+  .holds th:nth-child(9), .holds td.actions { width: 196px; white-space: nowrap; }
+
+  /* Payouts: Bill, Amount, Paid, Status. Hide Fund, Requested, Payment ref. */
+  .payouts th:nth-child(2), .payouts td:nth-child(2),
+  .payouts th:nth-child(6), .payouts td:nth-child(6),
+  .payouts th:nth-child(8), .payouts td:nth-child(8) { display: none; }
+
+  .payouts th:nth-child(4), .payouts td:nth-child(4) { width: 248px; }
+  .payouts th:nth-child(7), .payouts td:nth-child(7) { width: 152px; }
+  .payouts th:nth-child(9), .payouts td:nth-child(9) { width: 80px; }
+
+  /* Funds: same three columns as phone (Fund, Held, Available). */
+  .funds th.hide-m,
+  .funds td.hide-m { display: none; }
+  .funds td.fund-name::after {
+    content: attr(data-restriction);
+    display: block;
+    text-transform: none;
+    color: var(--stone);
+    font-size: 12px;
+    line-height: 1.35;
+    margin-top: 2px;
+  }
+  .funds td.num { font-size: 13px; }
+
+  /* Gifts: Donor, USDC out, Status. */
+  .gifts th:nth-child(n+4),
+  .gifts td.deposit,
+  .gifts td.origin { display: none; }
+}
+
+/* --------------------------------------------------------------------------
+   Phone, ≤700px (390 / 360 / 320). Stacked cards, 44px tap targets, no
+   page scroll. Amount and fund on a hold card sit in full on their own
+   line above Reject / Approve (Lily). No truncation of those facts.
+   -------------------------------------------------------------------------- */
+@media (max-width: 700px) {
+  .kpis { flex-wrap: wrap; gap: 12px; }
+  .kpi { flex: 1 1 calc(50% - 6px); min-width: 0; }
+  .kpi-num { font-size: 18px; white-space: normal; }
+  .kpi-num .unit { display: block; font-size: 11px; margin-top: 2px; }
+
+  .btn,
+  .toolbar .btn,
+  .holds .btn,
+  .acts .btn {
+    min-height: 44px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  /* Visually hide table headers so they stay available to assistive tech
+     without affecting the stacked-card layout (N3). */
+  .holds thead,
+  .payouts thead,
+  .gifts thead,
+  .funds thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .holds table,
+  .payouts table,
+  .gifts table,
+  .funds table {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    position: relative;
+  }
+
+  .holds tbody,
+  .payouts tbody,
+  .gifts tbody,
+  .funds tbody {
+    display: block;
+    width: 100%;
+    order: 1;
+  }
+
+  .holds caption,
+  .payouts caption,
+  .gifts caption,
+  .funds caption {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    order: 2;
+    text-align: left;
+  }
+
+  .funds td:nth-child(6)::before,
+  .funds td:nth-child(7)::before {
+    display: block;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--stone);
+    margin-bottom: 2px;
+  }
+  .funds td:nth-child(6)::before { content: "Held"; }
+  .funds td:nth-child(7)::before { content: "Available"; }
+  .funds td.num {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .holds tr,
+  .payouts tr,
+  .gifts tr,
+  .funds tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px 12px;
+    align-items: start;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .holds td,
+  .payouts td,
+  .gifts td,
+  .funds td {
+    border-bottom: 0;
+    padding: 0;
+    min-width: 0;
+  }
+
+  .holds tr:last-child,
+  .payouts tr:last-child,
+  .gifts tr:last-child,
+  .funds tr:last-child { border-bottom: 0; }
+
+  /* Holds: bill spans the row (title, vendor, id, then fund + amount in full),
+     actions sit under it, full width. */
+  .holds td.bill { grid-column: 1 / -1; }
+  .holds td.actions { grid-column: 1 / -1; }
+  .holds .acts {
+    flex-direction: row;
+    justify-content: stretch;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .holds .acts .btn { flex: 1 1 0; min-width: 0; }
+
+  /* Fund and amount on their own line above Reject / Approve. Never truncate. */
+  .holds .bill-facts.m-only {
+    display: block;
+    margin-top: 8px;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    max-width: none;
+  }
+  .holds .bill-facts.m-only,
+  .holds .bill-facts.m-only * {
+    overflow: visible;
+    text-overflow: unset;
+    white-space: normal;
+    max-width: none;
+  }
+
+  .payouts td.bill { grid-column: 1 / -1; }
+  .payouts td.num { justify-self: start; }
+  .payouts td:last-child { justify-self: end; }
+
+  .gifts td.donor { grid-column: 1 / -1; font-size: 13px; }
+
+  .funds td.fund-name { grid-column: 1 / -1; }
+  .funds td.num { font-size: 12px; }
+
+  caption { padding: 10px 16px; }
+  .empty { padding: 20px 16px; }
+}
+
+/* SHOULD: body type is also set in the base rule (16px / 1.5). */
+
+/* SHOULD: Refresh pressed / loading / updated-stamp highlight.
+   Do NOT change the Approve/Reject "Paying… waiting for the blockchain" state. */
+#refresh[aria-busy="true"] {
+  position: relative;
+  padding-left: 30px;
+  cursor: progress;
+}
+
+#refresh[aria-busy="true"]::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border: 2px solid var(--copper);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ol-spin 0.6s linear infinite;
+}
+
+@keyframes ol-spin {
+  to { transform: rotate(360deg); }
+}
+
+#updated.updated-flash {
+  border-radius: 4px;
+  animation: ol-updated 600ms ease;
+}
+
+@keyframes ol-updated {
+  0% { background: color-mix(in srgb, var(--copper) 22%, transparent); }
+  100% { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #refresh[aria-busy="true"]::before {
+    animation: ol-pulse 1s ease-in-out infinite;
+    border: 0;
+    background: var(--copper);
+    width: 8px;
+    height: 8px;
+    margin-top: -4px;
+    left: 12px;
+  }
+
+  @keyframes ol-pulse {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+  }
+
+  #updated.updated-flash {
+    animation: none;
+    background: color-mix(in srgb, var(--copper) 18%, transparent);
+  }
+}
+

@@ -3,7 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="only light" />
     <title>Example Community Church — OpenLid treasurer (demo, not a tax document)</title>
+    <meta property="og:title" content="Example Community Church — openLID treasurer (demo, not a tax document)" />
+    <meta property="og:description" content="NEAR testnet only. A treasurer page for fund-tagged gifts and bills. Demo, not a tax document. No real funds." />
+    <meta property="og:image" content="/assets/openlid-lockup.svg" />
+    <meta property="og:type" content="website" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
     <link rel="preload" href="/fonts/Geistwght.ttf" as="font" type="font/ttf" crossorigin />
@@ -15,7 +20,7 @@
     <header class="site-header">
       <div class="wrap bar">
         <div class="brand">
-          <img class="lockup" src="/assets/openlid-lockup.svg" alt="openLID" width="144" height="44" />
+          <a class="lockup-link" href="/" aria-label="openLID home"><img class="lockup" src="/assets/openlid-lockup.svg" alt="openLID" width="144" height="44" /></a>
           <div class="wordmark">OpenLid</div>
         </div>
         <p class="receipt-note" id="receipt-note">demo, not a tax document</p>
@@ -26,7 +31,7 @@
         <div>
           <h1>Treasury</h1>
           <p class="sub">
-            <span class="nowrap">Example Community Church</span> · <span class="nowrap">OpenLid treasurer</span> ·
+            <span class="nowrap">Example Community Church</span> · <span class="nowrap">openLID treasurer</span> ·
             <span class="nowrap">NEAR testnet</span><span class="nowrap" id="updated"></span>
           </p>
         </div>
@@ -72,7 +77,7 @@
         API: <code id="api-base"></code>
         <span id="mode-badge" class="badge" hidden>mock data</span>
       </p>
-      <p class="credit">OpenLid by Michael McClanahan (@tnvolman). NEAR testnet only, $0 spend.</p>
+      <p class="credit">openLID by Michael McClanahan (@tnvolman), 2026. NEAR testnet only, $0 spend.</p>
     </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>

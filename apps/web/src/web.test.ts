@@ -6,6 +6,7 @@ import { DEFAULT_API_BASE, isMockMode, resolveApiBase } from "./config.ts";
 import { CSV_FILENAME, triggerCsvDownload } from "./csv.ts";
 import { createMockFetch, fixtureState, summarize } from "./fixtures.ts";
 import { formatTime, formatUsdc, friendlyError, groupGiftsByFund } from "./format.ts";
+import { formatUpdated, load } from "./load.ts";
 import { renderGifts, renderHolds, renderPayouts, renderReconciliation, renderSummary } from "./render.ts";
 import {
   AMOUNT_CAPTION,
@@ -194,13 +195,15 @@ describe("per-fund accounting", () => {
     const { payouts, holds } = fixtureState();
     const p = renderPayouts(payouts);
     assert.match(p, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th><th class="num">Amount<\/th><th>Memo<\/th><th>Requested<\/th><th>Paid<\/th><th>Payment ref<\/th>/);
-    assert.match(p, /<td class="bill"><span class="bill-name">Electric, October<\/span>.*?<code>bill-electric-001<\/code>(?:(?!<\/td>).)*<\/td><td>building<\/td>/);
-    assert.match(p, /<td>2026-11-03 15:20 UTC<\/td><td>2026-11-03 15:20 UTC<\/td>/);
+    assert.match(p, /<td class="bill"><span class="bill-name" title="Electric, October">Electric, October<\/span>.*?<code title="bill-electric-001">bill-electric-001<\/code>(?:(?!<\/td>).)*<\/td><td>building<\/td>/);
+    assert.match(p, /<td title="2026-11-03T15:20:00\.000Z">3 Nov 15:20 UTC<\/td><td title="2026-11-03T15:20:00\.000Z">3 Nov 15:20 UTC<\/td>/);
+    assert.equal(formatTime("2026-11-03T15:20:00.000Z"), "3 Nov 15:20 UTC");
+    assert.equal(formatTime("2026-11-10T18:05:00.000Z"), "10 Nov 18:05 UTC");
     assert.match(p, /<code title="demoTxElectric001PaidOnTestnet">/);
     const h = renderHolds(holds);
     assert.match(h, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th><th class="num">Amount<\/th><th>Memo<\/th><th>Requested<\/th><th>Request ref<\/th>/);
-    assert.match(h, /<td class="bill"><span class="bill-name">Roof repair deposit<\/span>.*?<code>bill-roof-002<\/code>(?:(?!<\/td>).)*<\/td><td>general<\/td>/);
-    assert.match(h, /<td>2026-11-10 18:05 UTC<\/td>/);
+    assert.match(h, /<td class="bill"><span class="bill-name" title="Roof repair deposit">Roof repair deposit<\/span>.*?<code title="bill-roof-002">bill-roof-002<\/code>(?:(?!<\/td>).)*<\/td><td>general<\/td>/);
+    assert.match(h, /<td title="2026-11-10T18:05:00\.000Z">10 Nov 18:05 UTC<\/td>/);
     assert.match(h, /<code title="demoTxRoof002RequestOnTestnet">/);
     assert.equal(formatTime(null), "—");
     assert.match(renderPayouts([{ ...payouts[0], paidAt: null, paymentTxHash: null }]), /<td>—<\/td><td>—<\/td>/);
@@ -429,19 +432,26 @@ describe("premium restyle guards", () => {
     assert.match(read("./style.css"), /@media \(max-width: 700px\)[\s\S]*\.hide-m \{ display: none; \}/);
   });
 
-  it("holds put Reject before Approve (stacked on phones) and the amount on the meta line", () => {
+  it("holds put Reject before Approve, with fund and amount in full on a phone facts line", () => {
     const h = renderHolds(fixtureState().holds);
     assert.ok(h.indexOf('data-action="reject"') < h.indexOf('data-action="approve"'));
-    assert.match(h, /<code>bill-roof-002<\/code><span class="m-only"> · <span class="cap">general<\/span> · <span class="nowrap">90\.00 USDC<\/span><\/span>/);
-    assert.match(read("./style.css"), /\.holds \.acts \{ flex-direction: column;/);
+    assert.match(h, /<span class="bill-facts m-only"><span class="cap">general<\/span> · 90\.00 USDC<\/span>/);
+    assert.match(read("./style.css"), /@media \(max-width: 700px\)[\s\S]*\.holds \.acts \{[\s\S]*flex-direction: row;/);
+    assert.match(read("./style.css"), /@media \(max-width: 700px\)[\s\S]*min-height: 44px;/);
   });
 
-  it("copper is used only by the Approve and Reject buttons", () => {
+  it("copper is reserved for Approve, Reject, and the Refresh loading cue", () => {
     const css = read("./style.css");
-    const uses = css.split("\n").filter((l) => l.includes("var(--copper"));
-    assert.ok(uses.length > 0);
-    for (const l of uses) assert.match(l, /^\.btn-(approve|reject)/, l);
     assert.ok(!/#9E4E2A/i.test(css));
+    const blocks = css.split("}");
+    let hits = 0;
+    for (const b of blocks) {
+      if (!b.includes("var(--copper")) continue;
+      hits += 1;
+      const sel = b.split("{")[0].replace(/\/\*[\s\S]*?\*\//g, "").trim();
+      assert.match(sel, /btn-approve|btn-reject|#refresh|#updated|@keyframes|prefers-reduced-motion/, sel);
+    }
+    assert.ok(hits > 0);
   });
 
   it("no visible 'on-chain' wording on the page or in rendered sections", async () => {
@@ -461,5 +471,73 @@ describe("premium restyle guards", () => {
       if (!f.endsWith(".ttf")) assert.match(body.toString(), /SIL Open Font License, Version 1\.1/, f);
     }
     assert.ok(!/fonts\.googleapis|fonts\.gstatic|cdn/i.test(read("./theme.css") + html));
+  });
+});
+
+describe("Refresh loading state", () => {
+  it("clicking #refresh calls the four endpoints and changes #updated", async () => {
+    const calls: string[] = [];
+    const inner = createMockFetch();
+    const fetchImpl = async (input: string, init?: RequestInit) => {
+      calls.push(input);
+      return inner(input, init);
+    };
+    const api = createApi("", fetchImpl);
+    const flash = { tokens: new Set<string>() };
+    const els = {
+      refreshBtn: {
+        disabled: false,
+        textContent: "Refresh" as string | null,
+        attrs: {} as Record<string, string>,
+        setAttribute(name: string, value: string) {
+          this.attrs[name] = value;
+        },
+        removeAttribute(name: string) {
+          delete this.attrs[name];
+        },
+      },
+      error: { hidden: true, textContent: "" },
+      summary: { innerHTML: "" },
+      holds: { innerHTML: "" },
+      payouts: { innerHTML: "" },
+      gifts: { innerHTML: "" },
+      updated: {
+        textContent: "",
+        offsetWidth: 1,
+        classList: {
+          remove: (c: string) => flash.tokens.delete(c),
+          add: (c: string) => flash.tokens.add(c),
+        },
+      },
+    };
+    const renderers = { renderSummary, renderHolds, renderPayouts, renderGifts };
+
+    await load(api, els, renderers, new Date("2026-11-11T20:04:35.000Z"));
+    const first = els.updated.textContent;
+    assert.match(first, /updated /);
+    assert.match(first, /\d{1,2}:\d{2}:\d{2}/);
+    assert.deepEqual(
+      calls.filter((u) => u.startsWith("/api/")).sort(),
+      ["/api/gifts", "/api/holds?status=held", "/api/payouts", "/api/summary"].sort(),
+    );
+    assert.equal(els.refreshBtn.textContent, "Refresh");
+    assert.equal(els.refreshBtn.disabled, false);
+    assert.ok(!("aria-busy" in els.refreshBtn.attrs));
+    assert.ok(els.summary.innerHTML.length > 0);
+    assert.ok(flash.tokens.has("updated-flash"));
+
+    // A second click must hit the four endpoints again and change #updated.
+    calls.length = 0;
+    els.updated.textContent = first;
+    await load(api, els, renderers, new Date("2026-11-11T20:04:41.000Z"));
+    assert.notEqual(els.updated.textContent, first);
+    assert.match(els.updated.textContent, /updated /);
+    assert.match(els.updated.textContent, /\d{1,2}:\d{2}:\d{2}/);
+    assert.deepEqual(
+      calls.filter((u) => u.startsWith("/api/")).sort(),
+      ["/api/gifts", "/api/holds?status=held", "/api/payouts", "/api/summary"].sort(),
+    );
+    assert.match(formatUpdated(new Date("2026-11-11T20:04:41.000Z")), /updated /);
+    assert.match(formatUpdated(new Date("2026-11-11T20:04:41.000Z")), /\d{1,2}:\d{2}:\d{2}/);
   });
 });

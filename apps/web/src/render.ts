@@ -85,12 +85,22 @@ export function renderReconciliation(s: Summary): string {
 
 const ref = (hash: string | null | undefined) => (hash ? `<code title="${e(hash)}">${e(short(hash))}</code>` : "—");
 
+const timeCell = (iso: string | null | undefined) => {
+  const label = formatTime(iso);
+  return iso && label !== "—" ? `<td title="${e(iso)}">${e(label)}</td>` : "<td>—</td>";
+};
+
 /**
- * First cell of a bill row: the memo as the bill name, then the bill id. On a phone the hidden columns' key facts
- * (payee, fund, amount, reference) move onto the meta lines.
+ * First cell of a bill row: the memo as the bill name, then the bill id.
+ * Phone (`.m-only`) and tablet (`.t-only`) meta lines carry facts from columns that hide at those widths.
  */
-const billCell = (b: { bill_id: string; memo: string; vendor: string; fund: string }, mobileMeta: string, mobileRef = "") =>
-  `<td class="bill"><span class="bill-name">${e(b.memo || b.vendor)}</span><span class="bill-to">to <span class="nowrap">${e(b.vendor)}</span></span><span class="bill-meta"><code>${e(b.bill_id)}</code><span class="m-only"> · <span class="cap">${e(b.fund)}</span>${mobileMeta}</span></span>${mobileRef}</td>`;
+const billCell = (
+  b: { bill_id: string; memo: string; vendor: string; fund: string },
+  opts: { mobileMeta?: string; tabletMeta?: string; mobileRef?: string; facts?: string } = {},
+) => {
+  const name = b.memo || b.vendor;
+  return `<td class="bill"><span class="bill-name" title="${e(name)}">${e(name)}</span><span class="bill-to" title="${e(b.vendor)}">to <span class="nowrap">${e(b.vendor)}</span></span><span class="bill-meta"><code title="${e(b.bill_id)}">${e(b.bill_id)}</code><span class="m-only"> · <span class="cap">${e(b.fund)}</span>${opts.mobileMeta ?? ""}</span></span>${opts.tabletMeta ? `<span class="bill-meta t-only">${opts.tabletMeta}</span>` : ""}${opts.mobileRef ?? ""}${opts.facts ?? ""}</td>`;
+};
 
 export function renderHolds(holds: HoldView[]): string {
   const held = holds.filter((h) => h.status === "held");
@@ -98,9 +108,12 @@ export function renderHolds(holds: HoldView[]): string {
   const rows = held
     .map(
       (h) => `<tr data-bill-id="${e(h.bill_id)}">
-        ${billCell(h, ` · <span class="nowrap">${formatUsdc(h.amount)}</span>`)}<td>${e(h.fund)}</td><td>${e(h.vendor)}</td>
+        ${billCell(h, {
+          tabletMeta: `<span class="cap">${e(h.fund)}</span> · ${e(formatTime(h.requestedAt))} · ${ref(h.requestTxHash)}`,
+          facts: `<span class="bill-facts m-only"><span class="cap">${e(h.fund)}</span> · ${e(formatUsdc(h.amount))}</span>`,
+        })}<td>${e(h.fund)}</td><td>${e(h.vendor)}</td>
         <td class="num">${formatUsdc(h.amount)}</td><td>${e(h.memo)}</td>
-        <td>${formatTime(h.requestedAt)}</td><td>${ref(h.requestTxHash)}</td><td>${status(h.status)}</td>
+        ${timeCell(h.requestedAt)}<td>${ref(h.requestTxHash)}</td><td>${status(h.status)}</td>
         <td class="actions"><div class="acts">
           <button type="button" class="btn btn-reject" data-action="reject" data-bill-id="${e(h.bill_id)}">Reject</button>
           <button type="button" class="btn btn-approve" data-action="approve" data-bill-id="${e(h.bill_id)}">Approve</button>
@@ -120,9 +133,12 @@ export function renderPayouts(payouts: PayoutView[]): string {
   if (payouts.length === 0) return empty("No payouts yet.");
   const rows = payouts
     .map(
-      (p) => `<tr data-bill-id="${e(p.bill_id)}">${billCell(p, "", `<span class="bill-meta m-only">tx ${ref(p.paymentTxHash)}</span>`)}<td>${e(p.fund)}</td><td>${e(p.vendor)}</td>
+      (p) => `<tr data-bill-id="${e(p.bill_id)}">${billCell(p, {
+          tabletMeta: `<span class="cap">${e(p.fund)}</span> · ${e(formatTime(p.requestedAt))} · tx ${ref(p.paymentTxHash)}`,
+          mobileRef: `<span class="bill-meta m-only">tx ${ref(p.paymentTxHash)}</span>`,
+        })}<td>${e(p.fund)}</td><td>${e(p.vendor)}</td>
         <td class="num">${formatUsdc(p.amount)}</td><td>${e(p.memo)}</td>
-        <td>${formatTime(p.requestedAt)}</td><td>${formatTime(p.paidAt)}</td><td>${ref(p.paymentTxHash)}</td><td>${status(p.status)}</td></tr>`,
+        ${timeCell(p.requestedAt)}${timeCell(p.paidAt)}<td>${ref(p.paymentTxHash)}</td><td>${status(p.status)}</td></tr>`,
     )
     .join("");
   return tableCard(
@@ -141,10 +157,10 @@ function giftTable(gifts: Gift[]): string {
   if (gifts.length === 0) return empty("No gifts.");
   const rows = gifts
     .map(
-      (g) => `<tr data-gift-id="${e(g.id)}"><td class="donor">${e(g.donor)}<span class="bill-meta m-only">${deposit(g)}</span></td>
+      (g) => `<tr data-gift-id="${e(g.id)}"><td class="donor" title="${e(g.donor)}">${e(g.donor)}<span class="bill-meta m-only">${deposit(g)}</span></td>
         <td class="num">${formatUsdc(g.amountOut)}</td><td>${status(g.status)}</td>
         <td class="deposit">${deposit(g)}</td>
-        <td class="origin">${e(g.originAsset)}</td></tr>`,
+        <td class="origin" title="${e(g.originAsset)}">${e(g.originAsset)}</td></tr>`,
     )
     .join("");
   return tableCard(

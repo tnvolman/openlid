@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createApp } from '../src/app.js';
-import { classifyNearError, ContractRejectedError, loadKeyFromFile, resolveKeyFile, UnconfiguredNearClient } from '../src/near.js';
+import { classifyNearError, ContractRejectedError, loadKeyFromFile, NearUnavailableError, resolveKeyFile, UnconfiguredNearClient } from '../src/near.js';
 import { HttpOneClickClient } from '../src/oneclick.js';
 import { BOUNDARY_NO_CUSTODY, BOUNDARY_NONCASH } from '../src/types.js';
 import { giftBody, makeHarness } from './helpers.js';
@@ -516,6 +516,28 @@ describe('near helpers', () => {
     assert.equal(e.message, 'vendor is not on the allowlist');
     const net = classifyNearError(new Error('fetch failed'));
     assert.ok(!(net instanceof ContractRejectedError));
+    assert.ok(!(net instanceof NearUnavailableError));
+  });
+
+  it('classifies JSON-RPC -429 and HTTP 429/5xx RPC failures as NearUnavailableError', () => {
+    const soft = (err: unknown) => {
+      const e = classifyNearError(err);
+      assert.ok(e instanceof NearUnavailableError, `expected NearUnavailableError, got ${e.name}: ${e.message}`);
+      assert.equal(e.message, 'NEAR RPC is unavailable');
+    };
+
+    soft({ code: -429, message: 'Please use a different RPC provider' });
+    soft(Object.assign(new Error('JSON-RPC error code: -429'), { code: -429 }));
+    soft(Object.assign(new Error('Too Many Requests'), { cause: 429 }));
+    soft(Object.assign(new Error('Internal server error'), { cause: 500 }));
+    soft(Object.assign(new Error('https://rpc.testnet.near.org Bad Gateway'), { cause: 502 }));
+    soft(Object.assign(new Error('https://rpc.testnet.near.org unavailable'), { cause: 503 }));
+    soft(Object.assign(new Error('Exceeded 12 attempts for https://rpc.testnet.fastnear.com.'), { type: 'RetriesExceeded' }));
+    soft(new Error('The official RPC endpoint is deprecated; use a different RPC provider'));
+
+    const panic = classifyNearError(new Error('Smart contract panicked: insufficient fund balance\n    at ...'));
+    assert.ok(panic instanceof ContractRejectedError);
+    assert.ok(!(panic instanceof NearUnavailableError));
   });
 
   it('loads a key string from a file path without needing a real key', async () => {
