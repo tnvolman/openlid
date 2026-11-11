@@ -94,8 +94,16 @@ export interface GiftRecord {
   oneClickStatus: OneClickStatus | null;
   /** USDC (test FT) atomic units credited, once settled. */
   settledAmount: string | null;
-  /** Testnet tx hash of the simulated settlement (test FT mint), if any. */
+  /** Testnet tx hash of the simulated settlement (test FT mint), if any. Set once settled. */
   settlementTxHash?: string | null;
+  /**
+   * Internal: a test-FT mint already done for this gift (tx hash and amount), recorded even when the
+   * following credit_fund failed, so a retry credits only and never mints the same gift twice.
+   */
+  mintTxHash?: string | null;
+  mintedAmount?: string | null;
+  /** Internal: the credit_fund tx hash, once credited. */
+  creditTxHash?: string | null;
   createdAt: string;
   updatedAt: string;
 }

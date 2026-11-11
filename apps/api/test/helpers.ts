@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createApp } from '../src/app.js';
 import {
   ContractRejectedError,
+  SettlementCreditError,
   type CreditTreasuryArgs,
   type NearContractClient,
   type RequestPayoutArgs,
@@ -237,7 +238,8 @@ export class FakeTreasury implements NearContractClient {
 /**
  * Records test-FT credits instead of minting on testnet (the fake mint adds to `treasury.cash`), and, like
  * NearTestFtSettlement, then credits the treasury's fund ledger. Set `fail` to fail the mint, `failCredit`
- * to fail only credit_fund (cash is then minted but no fund is credited: a reconciliation mismatch).
+ * to fail only credit_fund (cash is then minted but no fund is credited: a reconciliation mismatch, and a
+ * `SettlementCreditError` carrying the mint hash). `mint: false` credits only.
  */
 export class FakeSettlement implements TestnetSettlement {
   credits: CreditTreasuryArgs[] = [];
@@ -245,14 +247,25 @@ export class FakeSettlement implements TestnetSettlement {
   fail?: Error;
   failCredit?: Error;
   constructor(private readonly treasury?: FakeTreasury) {}
+  /** Every call, including credit-only retries (`mint: false`). */
+  calls: CreditTreasuryArgs[] = [];
   async creditTreasury(args: CreditTreasuryArgs) {
+    this.calls.push(args);
     if (this.fail) throw this.fail;
-    this.minted.push(args);
-    if (this.treasury) this.treasury.cash += BigInt(args.amount);
-    if (this.failCredit) throw this.failCredit;
-    this.treasury?.creditFund(args.fund, args.amount, args.giftId);
+    let txHash: string | null = null;
+    if (args.mint) {
+      this.minted.push(args);
+      if (this.treasury) this.treasury.cash += BigInt(args.amount);
+      txHash = `fake-tx-${this.minted.length}`;
+    }
+    try {
+      if (this.failCredit) throw this.failCredit;
+      this.treasury?.creditFund(args.fund, args.amount, args.giftId);
+    } catch (err) {
+      throw args.mint ? new SettlementCreditError(txHash, err as Error) : err;
+    }
     this.credits.push(args);
-    return { txHash: `fake-tx-${this.credits.length}`, creditTxHash: `fake-credit-tx-${this.credits.length}` };
+    return { txHash, creditTxHash: `fake-credit-tx-${this.credits.length}` };
   }
 }
 

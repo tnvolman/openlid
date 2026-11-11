@@ -141,6 +141,9 @@ describe('gifts', () => {
 
     const summary = (await h.request('GET', '/api/summary')).json;
     assert.deepEqual(summary.giftsByFund.general, { restriction: 'without donor restrictions', count: 1, received: '9960000', paidOut: '0', held: '0', available: '9960000' });
+    // The SUCCESS sync also credited the (fake) on-chain fund ledger, and only for gift A.
+    assert.deepEqual(h.treasury.ledger.get('general'), { received: 9_960_000n, paid: 0n, held: 0n });
+    assert.deepEqual([...h.treasury.creditedGifts], [a.id]);
   });
 
   it('4. sync maps SUCCESS/REFUNDED/FAILED to settled/refunded/failed and GET /api/gifts shows them', async () => {
@@ -181,6 +184,10 @@ describe('gifts', () => {
     // Only the settled gift counts toward the fund summary.
     const summary = (await h.request('GET', '/api/summary')).json;
     assert.deepEqual(summary.giftsByFund.general, { restriction: 'without donor restrictions', count: 1, received: '9950000', paidOut: '0', held: '0', available: '9950000' });
+    // Only the SUCCESS gift was minted and credited on-chain.
+    assert.deepEqual(h.settlement.credits.map((c) => c.giftId), [ids['addr-success']]);
+    assert.deepEqual(h.treasury.ledger.get('general'), { received: 9_950_000n, paid: 0n, held: 0n });
+    assert.equal(summary.reconciliation.status, 'match');
   });
 
   it('sync sends depositMemo when the quote returned one', async () => {
@@ -357,7 +364,7 @@ describe('simulate-settlement (testnet only)', () => {
     assert.equal(r.json.settlementTxHash, 'fake-tx-1');
     assert.equal(r.json.quoteMode, 'dry_run');
     assert.equal(r.json.receiptNote, 'demo, not a tax document');
-    assert.deepEqual(h.settlement.credits, [{ giftId: g.id, amount: '9950000', fund: 'building' }]);
+    assert.deepEqual(h.settlement.credits, [{ giftId: g.id, amount: '9950000', fund: 'building', mint: true }]);
     // The owner's credit_fund landed in the gift's fund on the (fake) contract ledger, and nowhere else.
     assert.deepEqual(h.treasury.ledger.get('building'), { received: 9_950_000n, paid: 0n, held: 0n });
     assert.deepEqual(h.treasury.ledger.get('general'), { received: 0n, paid: 0n, held: 0n });
@@ -421,10 +428,17 @@ describe('simulate-settlement (testnet only)', () => {
     assert.deepEqual(h.treasury.ledger.get('missions'), { received: 0n, paid: 0n, held: 0n });
     assert.equal((await h.request('GET', '/api/summary')).json.giftsByFund.missions.received, '0');
 
-    // A retry once credit_fund works settles it; the fake contract rejects a double credit of the same gift.
+    // Minted tokens with no fund credit: visible mismatch, not silent.
+    assert.equal((await h.request('GET', '/api/summary')).json.reconciliation.status, 'mismatch');
+
+    // A retry once credit_fund works settles it with a credit only (the recorded mint is not repeated);
+    // the fake contract rejects a double credit of the same gift.
     h.settlement.failCredit = undefined;
     assert.equal((await h.request('POST', `/api/gifts/${g.id}/simulate-settlement`)).status, 200);
+    assert.equal(h.settlement.minted.length, 1);
+    assert.equal(h.treasury.cash, 9_950_000n);
     assert.deepEqual(h.treasury.ledger.get('missions'), { received: 9_950_000n, paid: 0n, held: 0n });
+    assert.equal((await h.request('GET', '/api/summary')).json.reconciliation.status, 'match');
     assert.throws(() => h.treasury.creditFund('missions', '1', g.id), /duplicate gift_id/);
   });
 
@@ -447,6 +461,151 @@ describe('simulate-settlement (testnet only)', () => {
     const g = (await q.json()) as any;
     const r = await app.request(`/api/gifts/${g.id}/simulate-settlement`, { method: 'POST' });
     assert.equal(r.status, 503);
+  });
+});
+
+describe('sync SUCCESS settles through the same mint + credit_fund path', () => {
+  let h: Awaited<ReturnType<typeof makeHarness>>;
+  beforeEach(async () => {
+    h = await makeHarness();
+  });
+  afterEach(() => h.cleanup());
+
+  const realGift = async (addr: string, fund: string) => {
+    h.oneClickMock.depositAddresses.push(addr);
+    const g = (await h.request('POST', '/api/gifts/quote', giftBody({ fund }))).json;
+    assert.equal(g.depositAddressSimulated, false);
+    return g;
+  };
+
+  it('1Click SUCCESS mints and credits the gift fund; summary and ledger agree; gift is settled', async () => {
+    const g = await realGift('addr-real-1', 'building');
+    h.oneClickMock.statuses.set('addr-real-1', { status: 'SUCCESS', amountOut: '9960000' });
+    const r = await h.request('POST', `/api/gifts/${g.id}/sync`);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.status, 'settled');
+    assert.equal(r.json.oneClickStatus, 'SUCCESS');
+    assert.equal(r.json.settledAmount, '9960000');
+    assert.equal(r.json.settlementTxHash, 'fake-tx-1');
+
+    // Settled amount = swapDetails.amountOut; fund = the gift's fund; gift id = the credit key.
+    assert.deepEqual(h.settlement.credits, [{ giftId: g.id, amount: '9960000', fund: 'building', mint: true }]);
+    assert.deepEqual(h.treasury.ledger.get('building'), { received: 9_960_000n, paid: 0n, held: 0n });
+    assert.ok(h.treasury.creditedGifts.has(g.id));
+    assert.equal(h.treasury.cash, 9_960_000n);
+
+    const s = (await h.request('GET', '/api/summary')).json;
+    assert.equal(s.giftsByFund.building.received, '9960000');
+    assert.equal(s.giftsByFund.building.available, '9960000');
+    assert.equal(s.giftsByFund.building.available, h.treasury.available('building').toString());
+    assert.equal(s.reconciliation.status, 'match');
+  });
+
+  it('re-syncing a settled gift does not mint, credit, or call 1Click again', async () => {
+    const g = await realGift('addr-real-2', 'missions');
+    h.oneClickMock.statuses.set('addr-real-2', { status: 'SUCCESS' });
+    assert.equal((await h.request('POST', `/api/gifts/${g.id}/sync`)).json.status, 'settled');
+    const statusCalls = () => h.oneClickMock.calls.filter((c) => c.url.pathname === '/v0/status').length;
+    const callsBefore = statusCalls();
+
+    for (let i = 0; i < 3; i++) {
+      const again = await h.request('POST', `/api/gifts/${g.id}/sync`);
+      assert.equal(again.status, 200);
+      assert.equal(again.json.status, 'settled');
+    }
+    assert.equal(h.settlement.calls.length, 1);
+    assert.equal(h.settlement.minted.length, 1);
+    assert.equal(h.settlement.credits.length, 1);
+    assert.deepEqual(h.treasury.ledger.get('missions'), { received: 9_950_000n, paid: 0n, held: 0n });
+    assert.equal(h.treasury.cash, 9_950_000n);
+    assert.equal(statusCalls(), callsBefore);
+    // And simulate-settlement cannot settle it a second way.
+    assert.equal((await h.request('POST', `/api/gifts/${g.id}/simulate-settlement`)).status, 409);
+    assert.equal((await h.request('GET', '/api/summary')).json.giftsByFund.missions.received, '9950000');
+  });
+
+  it('a failed credit_fund leaves the gift unsettled and the reconciliation a mismatch; the retry credits only', async () => {
+    const g = await realGift('addr-real-3', 'general');
+    h.oneClickMock.statuses.set('addr-real-3', { status: 'SUCCESS' });
+    h.settlement.failCredit = new ContractRejectedError('unauthorized: caller is not owner');
+    const r = await h.request('POST', `/api/gifts/${g.id}/sync`);
+    assert.equal(r.status, 422);
+    assert.match(r.json.error, /not owner/);
+
+    const after = (await h.request('GET', `/api/gifts/${g.id}`)).json;
+    assert.notEqual(after.status, 'settled');
+    assert.equal(after.status, 'processing');
+    assert.equal(after.oneClickStatus, 'SUCCESS');
+    assert.equal(after.settledAmount, null);
+    assert.deepEqual(h.treasury.ledger.get('general'), { received: 0n, paid: 0n, held: 0n });
+    const s = (await h.request('GET', '/api/summary')).json;
+    assert.equal(s.giftsByFund.general.received, '0');
+    assert.deepEqual(s.reconciliation, {
+      cash: '9950000',
+      ledgerTotal: '0',
+      ledgerSource: 'chain',
+      difference: '9950000',
+      status: 'mismatch',
+    });
+
+    // Retry: the recorded mint is not repeated; only credit_fund runs. Cash does not double.
+    h.settlement.failCredit = undefined;
+    const retry = await h.request('POST', `/api/gifts/${g.id}/sync`);
+    assert.equal(retry.status, 200, retry.text);
+    assert.equal(retry.json.status, 'settled');
+    assert.equal(retry.json.settlementTxHash, 'fake-tx-1', 'keeps the original mint tx');
+    assert.equal(h.settlement.minted.length, 1);
+    assert.deepEqual(h.settlement.calls.map((c) => c.mint), [true, false]);
+    assert.equal(h.treasury.cash, 9_950_000n);
+    assert.deepEqual(h.treasury.ledger.get('general'), { received: 9_950_000n, paid: 0n, held: 0n });
+    assert.equal((await h.request('GET', '/api/summary')).json.reconciliation.status, 'match');
+  });
+
+  it('a credit that already landed on-chain (duplicate gift_id) settles without crediting again', async () => {
+    const g = await realGift('addr-real-4', 'building');
+    h.oneClickMock.statuses.set('addr-real-4', { status: 'SUCCESS' });
+    // An earlier attempt credited on-chain, but the API never recorded it.
+    h.treasury.cash += 9_950_000n;
+    h.treasury.creditFund('building', '9950000', g.id);
+    await h.store.updateGift(g.id, { mintTxHash: 'earlier-mint', mintedAmount: '9950000' });
+    const r = await h.request('POST', `/api/gifts/${g.id}/sync`);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.status, 'settled');
+    assert.equal(h.settlement.minted.length, 0);
+    assert.deepEqual(h.treasury.ledger.get('building'), { received: 9_950_000n, paid: 0n, held: 0n });
+    assert.equal((await h.request('GET', '/api/summary')).json.reconciliation.status, 'match');
+  });
+
+  it('non-SUCCESS statuses never mint or credit', async () => {
+    const statuses = ['PENDING_DEPOSIT', 'KNOWN_DEPOSIT_TX', 'PROCESSING', 'INCOMPLETE_DEPOSIT', 'REFUNDED', 'FAILED'] as const;
+    for (const [i, status] of statuses.entries()) {
+      const g = await realGift(`addr-ns-${i}`, 'general');
+      h.oneClickMock.statuses.set(`addr-ns-${i}`, { status });
+      assert.equal((await h.request('POST', `/api/gifts/${g.id}/sync`)).status, 200);
+    }
+    assert.equal(h.settlement.calls.length, 0);
+    assert.equal(h.treasury.cash, 0n);
+    assert.equal(h.treasury.creditedGifts.size, 0);
+  });
+
+  it('sim: gifts are never polled or settled by sync', async () => {
+    const g = (await h.request('POST', '/api/gifts/quote', giftBody())).json;
+    assert.match(g.depositAddress, /^sim:/);
+    const r = await h.request('POST', `/api/gifts/${g.id}/sync`);
+    assert.equal(r.json.status, 'pending_deposit');
+    assert.equal(h.settlement.calls.length, 0);
+    assert.equal(h.oneClickMock.calls.filter((c) => c.url.pathname === '/v0/status').length, 0);
+  });
+
+  it('never mints outside testnet: the settlement is asked to credit only (production has no settlement there: 503)', async () => {
+    h = await makeHarness({ network: 'localnet' });
+    const g = await realGift('addr-real-5', 'missions');
+    h.oneClickMock.statuses.set('addr-real-5', { status: 'SUCCESS' });
+    const r = await h.request('POST', `/api/gifts/${g.id}/sync`);
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(h.settlement.calls.map((c) => c.mint), [false]);
+    assert.equal(h.settlement.minted.length, 0);
+    assert.equal(h.treasury.cash, 0n);
   });
 });
 

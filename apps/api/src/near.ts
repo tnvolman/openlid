@@ -329,12 +329,34 @@ export interface CreditTreasuryArgs {
   amount: string;
   /** Fund the gift was given to; recorded on-chain with `credit_fund`. */
   fund: Fund;
+  /**
+   * Mint the test FT into the treasury first. False when tokens are already there: a retry after a
+   * recorded mint whose credit failed, or a network where the real asset arrives on its own (never
+   * mint outside testnet).
+   */
+  mint: boolean;
 }
 
 /**
- * Simulated cross-chain settlement for the testnet demo. Credits the treasury contract with the test FT
- * (`contracts/test-ft`, symbol tUSDC) instead of receiving a real 1Click swap, then records the gift in
- * the treasury's per-fund ledger (`credit_fund`). Must throw unless BOTH steps succeeded.
+ * The mint succeeded but `credit_fund` did not. Carries the mint tx hash so the caller can record it and
+ * retry with `mint: false` (credit only), instead of minting the same gift twice. `cause` is the
+ * credit_fund error (already classified).
+ */
+export class SettlementCreditError extends Error {
+  constructor(
+    readonly mintTxHash: string | null,
+    override readonly cause: Error,
+  ) {
+    super(cause.message);
+    this.name = 'SettlementCreditError';
+  }
+}
+
+/**
+ * Settlement for the testnet demo. Credits the treasury contract with the test FT (`contracts/test-ft`,
+ * symbol tUSDC) when `mint` is set (1Click is dry-run here and delivers nothing), then records the gift in
+ * the treasury's per-fund ledger (`credit_fund`). Must throw unless every requested step succeeded; a
+ * credit failure after a successful mint must be a `SettlementCreditError`.
  */
 export interface TestnetSettlement {
   creditTreasury(args: CreditTreasuryArgs): Promise<{ txHash: string | null; creditTxHash?: string | null }>;
@@ -356,10 +378,10 @@ export interface NearTestFtSettlementOptions {
 }
 
 /**
- * Calls `mint(account, amount)` on the test FT, then `credit_fund(fund, amount, gift_id)` on the treasury,
- * both signed by the owner. Testnet only. If `credit_fund` fails the error propagates and the gift stays
- * unsettled; the minted tokens then sit in the treasury unallocated to any fund (they cannot be spent by a
- * bill), and a retry mints again before crediting.
+ * Calls `mint(account, amount)` on the test FT (when `mint`), then `credit_fund(fund, amount, gift_id)` on the
+ * treasury, both signed by the owner. Testnet only. If `credit_fund` fails after a mint, throws
+ * `SettlementCreditError` with the mint tx hash; the minted tokens then sit in the treasury unallocated to
+ * any fund (a visible cash-vs-ledger mismatch) until a credit-only retry.
  */
 export class NearTestFtSettlement implements TestnetSettlement {
   private readonly provider: JsonRpcProvider;
@@ -378,25 +400,34 @@ export class NearTestFtSettlement implements TestnetSettlement {
     return this.minter;
   }
 
-  async creditTreasury({ giftId, amount, fund }: CreditTreasuryArgs): Promise<{ txHash: string | null; creditTxHash: string | null }> {
+  async creditTreasury({ giftId, amount, fund, mint }: CreditTreasuryArgs): Promise<{ txHash: string | null; creditTxHash: string | null }> {
     const account = await this.account();
+    let mintTxHash: string | null = null;
+    if (mint) {
+      try {
+        const res = await account.callFunctionRaw({
+          contractId: this.opts.tokenId,
+          methodName: 'mint',
+          args: { account: this.opts.treasuryId, amount },
+          gas: GAS,
+        });
+        mintTxHash = txHashOf(res);
+      } catch (err) {
+        throw classifyNearError(err);
+      }
+    }
     try {
-      const mint = await account.callFunctionRaw({
-        contractId: this.opts.tokenId,
-        methodName: 'mint',
-        args: { account: this.opts.treasuryId, amount },
-        gas: GAS,
-      });
-      // Ledger only: the tokens above are what the fund credit stands for.
+      // Ledger only: the tokens already in the treasury are what the fund credit stands for.
       const credit = await account.callFunctionRaw({
         contractId: this.opts.treasuryId,
         methodName: 'credit_fund',
         args: { fund, amount, gift_id: giftId },
         gas: GAS,
       });
-      return { txHash: txHashOf(mint), creditTxHash: txHashOf(credit) };
+      return { txHash: mintTxHash, creditTxHash: txHashOf(credit) };
     } catch (err) {
-      throw classifyNearError(err);
+      const e = classifyNearError(err);
+      throw mint ? new SettlementCreditError(mintTxHash, e) : e;
     }
   }
 }

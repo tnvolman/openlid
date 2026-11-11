@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { ContractRejectedError, NearUnavailableError, type NearContractClient, type TestnetSettlement } from './near.js';
+import {
+  ContractRejectedError,
+  NearUnavailableError,
+  SettlementCreditError,
+  type NearContractClient,
+  type TestnetSettlement,
+} from './near.js';
 import { OneClickError, type OneClickClient } from './oneclick.js';
 import { DuplicateBillIdError, DuplicateDepositAddressError, type JsonStore } from './store.js';
 import {
@@ -239,12 +245,66 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(toGiftView(gift));
   });
 
+  const settling = new Set<string>();
+
+  /**
+   * The one settlement path, shared by /sync (real 1Click SUCCESS) and simulate-settlement: mint tUSDC into
+   * the treasury (testnet only, and only if no mint is already recorded for this gift), then owner
+   * credit_fund(gift.fund, amount, gift.id). The gift becomes `settled` only if both succeed. On failure
+   * `onFail` is written instead (never `settled`), plus any mint that did happen, and the error is rethrown.
+   */
+  async function settleGift(gift: GiftRecord, amount: string, extra: Partial<GiftRecord>, onFail: Partial<GiftRecord>) {
+    if (settling.has(gift.id)) throw new HttpError(409, 'settlement already in progress for this gift');
+    settling.add(gift.id);
+    try {
+      const priorMint = gift.mintTxHash ?? null;
+      const alreadyMinted = Boolean(priorMint || gift.mintedAmount);
+      // A retry credits exactly what was minted, not a possibly different re-quoted amount.
+      const creditAmount = alreadyMinted ? (gift.mintedAmount ?? amount) : amount;
+      const mint = deps.network === 'testnet' && !alreadyMinted;
+      let res: { txHash: string | null; creditTxHash?: string | null };
+      try {
+        res = await deps.settlement.creditTreasury({ giftId: gift.id, amount: creditAmount, fund: gift.fund, mint });
+      } catch (err) {
+        const minted = err instanceof SettlementCreditError;
+        const cause = minted ? err.cause : err;
+        // credit_fund already recorded this gift (an earlier attempt landed on-chain but the API never saw
+        // the result): it is credited, so settle without crediting again.
+        if (cause instanceof ContractRejectedError && /duplicate gift_id/.test(cause.message)) {
+          res = { txHash: minted ? err.mintTxHash : null, creditTxHash: null };
+        } else {
+          await store.updateGift(gift.id, {
+            ...onFail,
+            ...(minted ? { mintTxHash: err.mintTxHash, mintedAmount: creditAmount } : {}),
+            updatedAt: now().toISOString(),
+          });
+          throw cause;
+        }
+      }
+      const mintTxHash = res.txHash ?? priorMint;
+      return await store.updateGift(gift.id, {
+        ...extra,
+        status: 'settled',
+        settledAmount: creditAmount,
+        settlementTxHash: mintTxHash,
+        mintTxHash,
+        mintedAmount: mint || alreadyMinted ? creditAmount : null,
+        creditTxHash: res.creditTxHash ?? null,
+        updatedAt: now().toISOString(),
+      });
+    } finally {
+      settling.delete(gift.id);
+    }
+  }
+
   app.post('/api/gifts/:id/sync', async (c) => {
     const gift = store.getGift(c.req.param('id'));
     if (!gift) throw new HttpError(404, 'gift not found');
 
     // Simulated addresses have nothing to poll at 1Click; status only changes via simulate-settlement.
     if (isSimulatedAddress(gift.depositAddress)) return c.json(toGiftView(gift));
+    // Already settled (minted and credited): a re-sync is a no-op. No 1Click call, no mint, no credit.
+    if (gift.status === 'settled') return c.json(toGiftView(gift));
 
     // Status is looked up by this gift's deposit address only; never by amount.
     const st = await oneClick.status(gift.depositAddress, gift.depositMemo);
@@ -253,16 +313,27 @@ export function createApp(deps: AppDeps): Hono {
       throw new OneClickError('1Click status response is for a different deposit address');
     }
     const status = STATUS_MAP[st.status];
+    if (status === 'settled') {
+      // Same path as simulate-settlement. On this testnet demo 1Click is dry-run and delivers no tokens,
+      // so settleGift mints tUSDC first. If the credit fails the gift stays `processing` (1Click SUCCESS
+      // recorded) and the next sync retries the credit only.
+      const amount = st.swapDetails?.amountOut ?? gift.amountOut;
+      const settled = await settleGift(
+        gift,
+        amount,
+        { oneClickStatus: st.status },
+        { status: 'processing', oneClickStatus: st.status, settledAmount: null },
+      );
+      return c.json(toGiftView(settled));
+    }
     const updated = await store.updateGift(gift.id, {
       status,
       oneClickStatus: st.status,
-      settledAmount: status === 'settled' ? (st.swapDetails?.amountOut ?? gift.amountOut) : null,
+      settledAmount: null,
       updatedAt: now().toISOString(),
     });
     return c.json(toGiftView(updated));
   });
-
-  const settling = new Set<string>();
 
   app.post('/api/gifts/:id/simulate-settlement', async (c) => {
     if (deps.network === 'mainnet') {
@@ -279,23 +350,11 @@ export function createApp(deps: AppDeps): Hono {
     if (gift.status !== 'pending_deposit' && gift.status !== 'processing') {
       throw new HttpError(409, `gift is already ${gift.status}`);
     }
-    if (settling.has(gift.id)) throw new HttpError(409, 'settlement already in progress for this gift');
-    settling.add(gift.id);
-    try {
-      const amount = gift.amountOut;
-      // Mints the test FT into the treasury contract, then the owner records it in the gift's fund with
-      // credit_fund. No 1Click deposit is involved. Throws (gift stays unsettled) unless both succeed.
-      const { txHash } = await deps.settlement.creditTreasury({ giftId: gift.id, amount, fund: gift.fund });
-      const updated = await store.updateGift(gift.id, {
-        status: 'settled',
-        settledAmount: amount,
-        settlementTxHash: txHash,
-        updatedAt: now().toISOString(),
-      });
-      return c.json(toGiftView(updated));
-    } finally {
-      settling.delete(gift.id);
-    }
+    // Mints the test FT into the treasury contract (unless a mint is already recorded for this gift), then
+    // the owner records it in the gift's fund with credit_fund. No 1Click deposit is involved. Throws (gift
+    // stays unsettled) unless both succeed.
+    const updated = await settleGift(gift, gift.amountOut, {}, {});
+    return c.json(toGiftView(updated));
   });
 
   // ---- Payouts and holds ---------------------------------------------------
