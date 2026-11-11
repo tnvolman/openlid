@@ -39,9 +39,15 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/api/package-lock.json
+      - name: Install
+        working-directory: apps/api
+        run: npm ci
+      - name: Typecheck
+        working-directory: apps/api
+        run: npm run typecheck
       - name: API tests
         working-directory: apps/api
-        run: npm ci && npm test
+        run: npm test
 
   web:
     runs-on: ubuntu-latest
@@ -52,6 +58,12 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
+      - name: Install
+        working-directory: apps/web
+        run: npm ci
+      - name: Typecheck
+        working-directory: apps/web
+        run: npm run typecheck
       - name: UI tests
         working-directory: apps/web
-        run: npm ci && npm test
+        run: npm test

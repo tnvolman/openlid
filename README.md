@@ -35,7 +35,7 @@ Church stablecoin giving on NEAR. Hackathon build by Michael McClanahan (@tnvolm
 | `scripts/testnet/setup.mjs` | Creates testnet accounts through the faucet, generates keys into `.demo-keys/`, and deploys the contracts |
 | `INTERFACES.md` | The contract, API, and UI contract all parts build against |
 
-The contract, API, and UI are built in separate worktrees and merged at integration. Some of these directories may not exist yet on a given branch. See [Known issues](#known-issues).
+The contract, API, and UI are built in separate worktrees and merged at integration. See [Known issues](#known-issues).
 
 ## Setup
 
@@ -201,8 +201,6 @@ This comparison uses only POTLOCK's public docs at <https://docs.potlock.io>.
 - Gifts settle to an account the church owns. In this demo, that settlement is a simulated tUSDC mint on testnet.
 - Money goes out only as vendor payouts. The contract enforces the vendor allowlist (with a 24-hour timelock on changes), a per-bill limit, and a monthly cap. Unusual bills are held for the treasurer.
 - There is no matching pool and no quadratic funding.
-
-## License
 
 ## License
 
