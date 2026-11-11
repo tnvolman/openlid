@@ -20,9 +20,27 @@ Do not edit a path you do not own. Do not push, open PRs, merge, deploy, or add 
 - `owner` (treasurer): church-controlled NEAR account. In production a hardware wallet or multisig. Signs `approve_hold`, `reject_hold`, and allowlist proposals. Never an OpenLid-held key.
 - `agent`: church-issued **function-call access key only**, limited to this contract and method `request_payout`. No seed, no full-access key, no implicit private key in repo, logs, or env examples.
 - `vendor`: allowlisted NEAR account that can receive payouts.
-- `usdc_token`: NEP-141 USDC account id. Settlement destination is this contract on the church's NEAR account.
+- `usdc_token`: NEP-141 token account id. On the testnet demo this is a simple test FT (not mainnet USDC). Settlement destination is the treasury contract on the church's testnet account.
 
-Environment variable **names only** (see `.env.example`): `OPENLID_NETWORK`, `OPENLID_CONTRACT_ID`, `OPENLID_OWNER_ACCOUNT_ID`, `OPENLID_AGENT_ACCOUNT_ID`, `OPENLID_AGENT_KEY_FILE`, `OPENLID_USDC_TOKEN_ID`, `ONECLICK_BASE_URL`, `ONECLICK_API_KEY`, `OPENLID_DATA_DIR`. Values and key files stay off-repo.
+Environment variable **names only** (see `.env.example`): `OPENLID_NETWORK`, `OPENLID_CONTRACT_ID`, `OPENLID_OWNER_ACCOUNT_ID`, `OPENLID_AGENT_ACCOUNT_ID`, `OPENLID_AGENT_KEY_FILE`, `OPENLID_OWNER_KEY_FILE`, `OPENLID_USDC_TOKEN_ID`, `OPENLID_DEMO_KEYS_DIR`, `ONECLICK_BASE_URL`, `ONECLICK_API_KEY`, `ONECLICK_DRY_RUN`, `OPENLID_DATA_DIR`. Values and key files stay off-repo.
+
+
+## Testnet demo (required)
+
+Michael approved a NEAR **testnet-only** demo at 12:45 AM ET on Nov 11, $0 spend. These rules override any earlier "real quote" wording below.
+
+- Everything runs on NEAR testnet. The demo creates a sub-account via the testnet faucet or near-cli. No mainnet accounts, no real funds, no paid APIs.
+- NEAR Intents 1Click is mainnet-only. Keep the real 1Click client and the per-gift quote and matching code, but run quotes in **dry-run mode only** (`dry: true`). Official docs: a dry quote does **not** return `depositAddress`. No deposit is ever sent.
+- Because a dry quote has no deposit address, the API assigns a unique **simulated** deposit address per gift (prefix `sim:`) and still matches gifts by that address only, never by amount. The matching code must also accept a real `depositAddress` when a non-dry fixture is used in tests, but the demo and default config never call 1Click with `dry: false` and never broadcast a deposit.
+- The $0 demo must run with `ONECLICK_API_KEY` unset. If a key is not set, do not call the live 1Click endpoint (it is a paid/partner API). Use the real client against a dry-run-shaped local stub with the same types as `POST /v0/quote` (`dry: true`, no `depositAddress`). Tests mock the HTTP client either way.
+- Settlement is **not** a cross-chain transfer. A testnet adapter mints or transfers a testnet USDC-like token (a simple test FT contract) into the church treasury contract, then marks the gift `settled`. The README and the demo must say plainly that the cross-chain leg is a dry-run quote plus a simulated settlement on testnet.
+- Testnet keys are generated locally at demo time into `OPENLID_DEMO_KEYS_DIR` (default `.demo-keys/`, gitignored). Nothing in that directory is committed. Key material is never printed to logs, stdout, or error messages (print paths and account ids only).
+- Do not add a LICENSE file. README must include the line: `License: to be decided.`
+- The GitHub repository stays PRIVATE. Never change visibility.
+
+## Contract test FT (`contracts/test-ft`)
+
+A minimal NEP-141 (6 decimals, symbol `tUSDC`) used only on testnet or in unit tests. Owner can `mint(account, amount)` so the demo can credit the treasury. No mainnet deploy.
 
 ## Contract (`contracts/treasury`)
 
@@ -84,26 +102,28 @@ Emit under standard `EVENT_JSON:` with `standard: "openlid", version: "1.0.0"`.
 | `allowlist_executed` | `vendor, action` |
 | `limits_updated` | `per_bill_limit, monthly_cap` |
 
-## 1Click (docs, not live mainnet)
+## 1Click (dry-run only in the demo)
 
-Use the public 1Click API as documented at https://docs.near-intents.org. Base URL default: `https://1click.chaindefuser.com`. Auth header name: `X-API-Key` (legacy `Authorization: Bearer` is accepted by the API; we send `X-API-Key`). Tests **must mock** these HTTP calls. Nothing in tests or the demo touches mainnet funds.
+Use the public 1Click API as documented at https://docs.near-intents.org. Base URL default: `https://1click.chaindefuser.com`. Auth header name: `X-API-Key`. Tests **must mock** these HTTP calls. The demo never touches mainnet funds and never sends a deposit.
 
 ### `POST /v0/quote`
 
 Request (required fields from the official schema): `dry`, `swapType`, `slippageTolerance`, `originAsset`, `depositType`, `destinationAsset`, `amount`, `refundTo`, `refundType`, `recipient`, `recipientType`, `deadline`.
 
-OpenLid always uses:
+OpenLid demo and default config always use:
 
-- `dry: false` for a real quote (tests may also cover `dry: true`, which has no `depositAddress`)
+- `dry: true` (official schema: response does **not** contain `depositAddress`, `timeWhenInactive`, or `deadline`)
 - `swapType: "EXACT_INPUT"`
 - `depositType: "ORIGIN_CHAIN"`
 - `recipientType: "DESTINATION_CHAIN"`
-- `recipient`: the church treasury contract account (USDC on NEAR)
-- `destinationAsset`: the configured USDC asset id (NEP-141 style, e.g. `nep141:usdc.near` — exact testnet id is an env value, not hardcoded as a secret)
+- `recipient`: the church treasury contract account on testnet
+- `destinationAsset`: configured asset id (env). The live 1Click path is not how testnet settlement happens.
 
-Response fields we persist: `correlationId`, `signature`, `timestamp`, `quote.depositAddress`, `quote.depositMemo` (optional), `quote.amountIn`, `quote.amountOut`, `quote.minAmountOut`, `quote.deadline`.
+The client code may still parse a non-dry response (including `quote.depositAddress`) so tests can cover matching against the official shape. The demo must not send `dry: false` and must not use a payable deposit address.
 
-**One quote and one `depositAddress` per gift.** Never reuse a deposit address. Match inbound swaps to gifts by `depositAddress` only, never by amount.
+Response fields we persist when present: `correlationId`, `signature`, `timestamp`, `quote.depositAddress`, `quote.depositMemo` (optional), `quote.amountIn`, `quote.amountOut`, `quote.minAmountOut`, `quote.deadline`.
+
+**One quote and one deposit address per gift.** If the (dry) quote has no `depositAddress`, assign a unique simulated address `sim:<id>` and persist that. Never reuse an address. Match gifts by deposit address only, never by amount.
 
 ### `GET /v0/status?depositAddress={address}`
 
@@ -131,7 +151,7 @@ JSON only, except the CSV export. No secrets in responses. Receipt-facing copy m
 }
 ```
 
-Behavior: call 1Click `POST /v0/quote`, persist one gift keyed by `quote.depositAddress`, return:
+Behavior: obtain a dry-run quote (live client with `dry: true` only if `ONECLICK_API_KEY` is set; otherwise a local dry-run-shaped stub — no paid API call). Persist one gift keyed by `quote.depositAddress` or, if absent, a new unique `sim:<id>` address. Return `quoteMode: "dry_run"` and:
 
 ```json
 {
@@ -145,6 +165,7 @@ Behavior: call 1Click `POST /v0/quote`, persist one gift keyed by `quote.deposit
   "amountOut": "...",
   "originAsset": "...",
   "status": "pending_deposit",
+  "quoteMode": "dry_run",
   "receiptNote": "demo, not a tax document"
 }
 ```
@@ -153,7 +174,9 @@ Behavior: call 1Click `POST /v0/quote`, persist one gift keyed by `quote.deposit
 
 `GET /api/gifts/:id`
 
-`POST /api/gifts/:id/sync` — poll 1Click `GET /v0/status` with this gift's `depositAddress` (and memo if present). Map status, persist, return the gift.
+`POST /api/gifts/:id/sync` — for a gift with a real 1Click deposit address, poll `GET /v0/status` and map as below. For a simulated `sim:` address, do not call live 1Click; leave status unchanged unless a testnet settlement has occurred.
+
+`POST /api/gifts/:id/simulate-settlement` — **testnet only**. Refuses if `OPENLID_NETWORK` is `mainnet`. Mints or transfers the test FT into the treasury contract for this gift's `amountOut` (or quoted amount) and sets status `settled`. This is the simulated cross-chain settlement. Never sends a 1Click deposit.
 
 Gift `status` mapping (store OpenLid names, never guess a match by amount):
 
@@ -165,7 +188,7 @@ Gift `status` mapping (store OpenLid names, never guess a match by amount):
 | `REFUNDED` | `refunded` |
 | `FAILED` | `failed` |
 
-`settled` means USDC is treated as landed in the church-owned treasury contract. Failed and refunded are first-class statuses, not folded into pending.
+`settled` means the test FT has been credited to the church-owned treasury contract (simulated settlement on testnet). Failed and refunded are first-class statuses, not folded into pending. The matching tests still map 1Click `SUCCESS` / `REFUNDED` / `FAILED` from mocked status payloads.
 
 ### Payouts and holds
 
@@ -202,10 +225,10 @@ Treasurer page against the HTTP API:
 - CSV download via `/api/export.csv`
 - Visible receipt label: `demo, not a tax document`
 
-`scripts/demo.sh` starts the API (and UI if needed) in a local or testnet sandbox, seeds one auto-paid allowlisted bill and one held unusual bill (contract state may be mocked in the API for the thin demo if the sandbox cannot run; document that honestly).
+`scripts/demo.sh` runs on NEAR testnet only ($0, no mainnet, no paid APIs). It creates a testnet sub-account via the faucet or near-cli, writes keys only to `.demo-keys/` (gitignored, never printed), deploys or uses the test FT and treasury contracts, starts the API and UI, takes a dry-run quote (or stub), simulates settlement of at least one gift into the contract, and seeds one auto-paid allowlisted bill plus one held unusual bill. It must print a plain-language notice that the cross-chain leg is a dry-run quote plus a simulated settlement on testnet. If faucet or deploy cannot run on this machine, fail honestly and document it; do not fake a testnet receipt.
 
 ## Tests each tree must leave green
 
 - Contract: cap, per-bill limit, allowlist add/remove, 24h delay (too early fails, after delay succeeds), hold + treasurer approve, unauthorized caller rejected for `request_payout` and `approve_hold`. Prefer `near-sdk` unit tests; `near-workspaces` sandbox is optional and must not be faked if it will not run.
-- App: quote persists a unique `depositAddress` per gift; two gifts never share an address; sync maps `SUCCESS` → `settled`, `REFUNDED` → `refunded`, `FAILED` → `failed`; matching is by deposit address only (a second gift with the same amount does not steal the first gift's status).
-- UI / README: setup, architecture, known-issues, and a short POTLOCK comparison written from POTLOCK's public docs (open public-goods / quadratic-funding pots vs OpenLid's church treasury with on-contract vendor policy). No invented POTLOCK claims.
+- App: dry-run quote persists a unique deposit address per gift (`sim:` when the quote has none); two gifts never share an address; mocked sync maps `SUCCESS` → `settled`, `REFUNDED` → `refunded`, `FAILED` → `failed`; matching is by deposit address only (a second gift with the same amount does not steal the first gift's status); `simulate-settlement` credits the test FT and marks `settled`, and is refused when the network is mainnet.
+- UI / README: setup, architecture, known-issues, the testnet-only / dry-run plus simulated settlement wording, the line `License: to be decided.`, and a short POTLOCK comparison written from POTLOCK's public docs (open public-goods / quadratic-funding pots vs OpenLid's church treasury with on-contract vendor policy). No invented POTLOCK claims. No LICENSE file.
