@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Account, JsonRpcProvider, KeyPair, KeyPairSigner, type KeyPairString } from 'near-api-js';
-import type { Fund, HoldStatus, HoldView, PayoutView } from './types.js';
+import type { Fund, FundLedgerView, HoldStatus, HoldView, PayoutView } from './types.js';
 
 export interface RequestPayoutArgs {
   vendor: string;
@@ -14,6 +14,8 @@ export interface RequestPayoutArgs {
 
 export interface RequestPayoutResult {
   status: 'paid' | 'held';
+  /** NEAR tx hash of the request_payout call, when known. */
+  txHash?: string | null;
 }
 
 /**
@@ -27,10 +29,13 @@ export interface NearContractClient {
   getPayout(billId: string): Promise<PayoutView | null>;
   getHold(billId: string): Promise<HoldView | null>;
   listHolds(status?: HoldStatus): Promise<HoldView[]>;
-  approveHold(billId: string): Promise<void>;
-  rejectHold(billId: string): Promise<void>;
+  /** Resolves with the approve_hold tx hash when known (the payment reference). */
+  approveHold(billId: string): Promise<{ txHash: string | null }>;
+  rejectHold(billId: string): Promise<{ txHash: string | null }>;
   /** Live USDC balance held by the treasury contract (smallest units), or null if unknown. */
   treasuryBalance?(): Promise<string | null>;
+  /** Contract `get_fund_ledger`: on-chain per-fund received / paid / held / available. */
+  fundLedger?(): Promise<FundLedgerView[]>;
 }
 
 /** The contract panicked (unauthorized, unknown vendor, cap exceeded, insufficient fund balance, duplicate bill, ...). Maps to 4xx. */
@@ -135,6 +140,11 @@ export function defaultRpcUrl(network: string): string {
 
 const GAS = 100_000_000_000_000n; // 100 TGas, enough for the USDC ft_transfer cross-contract call
 
+const txHashOf = (res: unknown): string | null => {
+  const r = res as { transaction_outcome?: { id?: string }; transaction?: { hash?: string } };
+  return r.transaction_outcome?.id ?? r.transaction?.hash ?? null;
+};
+
 /**
  * Production client. The agent key MUST be a function-call access key restricted to
  * `receiver_id = OPENLID_CONTRACT_ID` and `method_names = ["request_payout"]`; this is
@@ -210,20 +220,22 @@ export class NearRpcContractClient implements NearContractClient {
 
   async requestPayout(args: RequestPayoutArgs): Promise<RequestPayoutResult> {
     const account = await this.agentAccount();
+    let txHash: string | null;
     try {
-      await account.callFunction({
+      const res = await account.callFunctionRaw({
         contractId: this.opts.contractId,
         methodName: 'request_payout',
         args: { vendor: args.vendor, amount: args.amount, bill_id: args.billId, memo: args.memo, fund: args.fund },
         gas: GAS,
       });
+      txHash = txHashOf(res);
     } catch (err) {
       throw classifyNearError(err);
     }
     // The contract records either a payout (paid) or a hold (held); read it back rather than guess.
-    if (await this.getPayout(args.billId)) return { status: 'paid' };
+    if (await this.getPayout(args.billId)) return { status: 'paid', txHash };
     const hold = await this.getHold(args.billId);
-    if (hold?.status === 'held') return { status: 'held' };
+    if (hold?.status === 'held') return { status: 'held', txHash };
     // The function-call "succeeded" but the ft_transfer callback rolled the
     // payout back (commonly: treasury token balance too low). Surface as a
     // contract rejection, not a 500.
@@ -254,29 +266,34 @@ export class NearRpcContractClient implements NearContractClient {
     }
   }
 
+  fundLedger(): Promise<FundLedgerView[]> {
+    return this.view<FundLedgerView[] | null>('get_fund_ledger', {}).then((v) => v ?? []);
+  }
+
   listHolds(status?: HoldStatus): Promise<HoldView[]> {
     return this.view<HoldView[] | null>('list_holds', { status: status ?? null }).then((v) => v ?? []);
   }
 
-  private async ownerCall(methodName: string, billId: string): Promise<void> {
+  private async ownerCall(methodName: string, billId: string): Promise<{ txHash: string | null }> {
     const account = await this.ownerAccount();
     try {
-      await account.callFunction({
+      const res = await account.callFunctionRaw({
         contractId: this.opts.contractId,
         methodName,
         args: { bill_id: billId },
         gas: GAS,
       });
+      return { txHash: txHashOf(res) };
     } catch (err) {
       throw classifyNearError(err);
     }
   }
 
-  approveHold(billId: string): Promise<void> {
+  approveHold(billId: string): Promise<{ txHash: string | null }> {
     return this.ownerCall('approve_hold', billId);
   }
 
-  rejectHold(billId: string): Promise<void> {
+  rejectHold(billId: string): Promise<{ txHash: string | null }> {
     return this.ownerCall('reject_hold', billId);
   }
 }
@@ -299,10 +316,10 @@ export class UnconfiguredNearClient implements NearContractClient {
   async listHolds(): Promise<HoldView[]> {
     this.fail();
   }
-  async approveHold(): Promise<void> {
+  async approveHold(): Promise<{ txHash: string | null }> {
     this.fail();
   }
-  async rejectHold(): Promise<void> {
+  async rejectHold(): Promise<{ txHash: string | null }> {
     this.fail();
   }
 }
@@ -337,11 +354,6 @@ export interface NearTestFtSettlementOptions {
   minterAccountId: string;
   minterKeyFile: string;
 }
-
-const txHashOf = (res: unknown): string | null => {
-  const r = res as { transaction_outcome?: { id?: string }; transaction?: { hash?: string } };
-  return r.transaction_outcome?.id ?? r.transaction?.hash ?? null;
-};
 
 /**
  * Calls `mint(account, amount)` on the test FT, then `credit_fund(fund, amount, gift_id)` on the treasury,

@@ -6,6 +6,9 @@ import { ContractRejectedError, NearUnavailableError, type NearContractClient, t
 import { OneClickError, type OneClickClient } from './oneclick.js';
 import { DuplicateBillIdError, DuplicateDepositAddressError, type JsonStore } from './store.js';
 import {
+  BOUNDARY_NOT_GAAP,
+  BOUNDARY_PUB_1771,
+  FUND_RESTRICTION,
   FUNDS,
   HOLD_STATUSES,
   RECEIPT_NOTE,
@@ -17,10 +20,12 @@ import {
   type Fund,
   type FundSummary,
   type GiftRecord,
+  type HoldRow,
   type HoldStatus,
   type HoldView,
   type PayoutRecord,
-  type PayoutView,
+  type PayoutRow,
+  type Reconciliation,
 } from './types.js';
 
 export interface AppDeps {
@@ -91,8 +96,29 @@ function sumAmounts(xs: Array<string | null | undefined>): string {
   return xs.reduce<bigint>((acc, x) => acc + (x && POSITIVE_INT.test(x) ? BigInt(x) : 0n), 0n).toString();
 }
 
-function payoutView(p: PayoutRecord): PayoutView {
-  return { bill_id: p.billId, vendor: p.vendor, amount: p.amount, memo: p.memo, fund: p.fund, status: 'paid' };
+function payoutRow(p: PayoutRecord): PayoutRow {
+  return {
+    bill_id: p.billId,
+    vendor: p.vendor,
+    amount: p.amount,
+    memo: p.memo,
+    fund: p.fund,
+    status: 'paid',
+    requestedAt: p.createdAt,
+    paidAt: p.paidAt ?? null,
+    paymentTxHash: p.paymentTxHash ?? null,
+    requestTxHash: p.requestTxHash ?? null,
+  };
+}
+
+function holdRow(h: HoldView, local: PayoutRecord | undefined): HoldRow {
+  return {
+    ...h,
+    requestedAt: local?.createdAt ?? null,
+    requestTxHash: local?.requestTxHash ?? null,
+    paidAt: local?.paidAt ?? null,
+    paymentTxHash: local?.paymentTxHash ?? null,
+  };
 }
 
 const CSV_INJECTION = /^[=+\-@\t\r]/;
@@ -288,12 +314,26 @@ export function createApp(deps: AppDeps): Hono {
     // including that the bill fits the fund's on-chain available balance.
     const result = await near.requestPayout({ vendor, amount, billId, memo, fund });
     const ts = now().toISOString();
-    await store.upsertPayout({ billId, vendor, amount, memo, fund, status: result.status, createdAt: ts, updatedAt: ts });
-    return c.json({ billId, status: result.status, vendor, amount, fund });
+    const txHash = result.txHash ?? null;
+    const paid = result.status === 'paid';
+    await store.upsertPayout({
+      billId,
+      vendor,
+      amount,
+      memo,
+      fund,
+      status: result.status,
+      createdAt: ts,
+      updatedAt: ts,
+      requestTxHash: txHash,
+      paymentTxHash: paid ? txHash : null,
+      paidAt: paid ? ts : null,
+    });
+    return c.json({ billId, status: result.status, vendor, amount, fund, requestedAt: ts, txHash });
   });
 
   app.get('/api/payouts', (c) => {
-    const payouts = store.listPayouts().filter((p) => p.status === 'paid').map(payoutView);
+    const payouts = store.listPayouts().filter((p) => p.status === 'paid').map(payoutRow);
     return c.json({ payouts });
   });
 
@@ -302,15 +342,14 @@ export function createApp(deps: AppDeps): Hono {
     if (status !== undefined && !HOLD_STATUSES.includes(status as HoldStatus)) {
       throw new HttpError(400, `status must be one of ${HOLD_STATUSES.join(', ')}`);
     }
-    const holds = await near.listHolds(status as HoldStatus | undefined);
+    const holds = (await near.listHolds(status as HoldStatus | undefined)).map((h) => holdRow(h, store.getPayout(h.bill_id)));
     return c.json({ holds });
   });
 
   async function resolveHold(c: Context, action: 'approve' | 'reject') {
     const billId = c.req.param('billId');
     if (!billId) throw new HttpError(400, 'billId is required');
-    if (action === 'approve') await near.approveHold(billId);
-    else await near.rejectHold(billId);
+    const { txHash } = action === 'approve' ? await near.approveHold(billId) : await near.rejectHold(billId);
 
     const hold = await near.getHold(billId).catch(() => null);
     if (action === 'approve' && hold?.status === 'held') {
@@ -325,9 +364,19 @@ export function createApp(deps: AppDeps): Hono {
       local ??
       (hold ? { billId, vendor: hold.vendor, amount: hold.amount, memo: hold.memo, fund: hold.fund, createdAt: ts } : null);
     if (base) {
-      await store.upsertPayout({ ...base, status: action === 'approve' ? 'paid' : 'rejected', updatedAt: ts });
+      await store.upsertPayout({
+        ...base,
+        status: action === 'approve' ? 'paid' : 'rejected',
+        updatedAt: ts,
+        ...(action === 'approve' ? { paidAt: ts, paymentTxHash: txHash } : {}),
+      });
     }
-    return c.json({ billId, status: action === 'approve' ? 'approved' : 'rejected', hold });
+    return c.json({
+      billId,
+      status: action === 'approve' ? 'approved' : 'rejected',
+      hold: hold ? holdRow(hold, store.getPayout(billId)) : null,
+      txHash,
+    });
   }
 
   app.post('/api/holds/:billId/approve', (c) => resolveHold(c, 'approve'));
@@ -335,7 +384,8 @@ export function createApp(deps: AppDeps): Hono {
 
   // ---- Summary and export --------------------------------------------------
 
-  app.get('/api/summary', async (c) => {
+  /** Per-fund figures, holds, live cash, and the cash-vs-ledger check. Shared by /api/summary and the CSV. */
+  async function computeSummary() {
     const gifts = store.listGifts();
     const paid = store.listPayouts().filter((p) => p.status === 'paid');
     let held: HoldView[] = [];
@@ -347,49 +397,122 @@ export function createApp(deps: AppDeps): Hono {
       if (!(err instanceof NearUnavailableError)) throw err;
       holds = { heldCount: 0, heldAmount: '0', available: false };
     }
-    // Mirrors the contract's per-fund ledger: available = received - paidOut; holds do not reduce it.
+    // Mirrors the contract's per-fund ledger: available = received - paidOut - held (holds are reserved).
     const giftsByFund = Object.fromEntries(
       FUNDS.map((f): [Fund, FundSummary] => {
         const settled = gifts.filter((g) => g.fund === f && g.status === 'settled');
         const received = sumAmounts(settled.map((g) => g.settledAmount));
         const paidOut = sumAmounts(paid.filter((p) => p.fund === f).map((p) => p.amount));
+        const heldAmt = sumAmounts(held.filter((h) => h.fund === f).map((h) => h.amount));
         return [
           f,
           {
+            restriction: FUND_RESTRICTION[f],
             count: settled.length,
             received,
             paidOut,
-            held: sumAmounts(held.filter((h) => h.fund === f).map((h) => h.amount)),
-            available: (BigInt(received) - BigInt(paidOut)).toString(),
+            held: heldAmt,
+            available: (BigInt(received) - BigInt(paidOut) - BigInt(heldAmt)).toString(),
           },
         ];
       }),
     ) as Record<Fund, FundSummary>;
+
     let treasuryBalance: string | null = null;
     try {
       treasuryBalance = (await near.treasuryBalance?.()) ?? null;
     } catch (err) {
       if (!(err instanceof NearUnavailableError)) throw err;
     }
-    return c.json({
+
+    // Cash vs fund ledgers. Prefer the contract's own ledger: it is what bills are checked against.
+    let ledgerTotal: bigint | null = null;
+    try {
+      const chain = await near.fundLedger?.();
+      if (chain && chain.length) ledgerTotal = chain.reduce((acc, l) => acc + BigInt(l.received) - BigInt(l.paid), 0n);
+    } catch (err) {
+      if (!(err instanceof NearUnavailableError)) throw err;
+    }
+    const ledgerSource: Reconciliation['ledgerSource'] = ledgerTotal === null ? 'api' : 'chain';
+    ledgerTotal ??= FUNDS.reduce((acc, f) => acc + BigInt(giftsByFund[f].received) - BigInt(giftsByFund[f].paidOut), 0n);
+    const reconciliation: Reconciliation =
+      treasuryBalance === null
+        ? { cash: null, ledgerTotal: ledgerTotal.toString(), ledgerSource, difference: null, status: 'unknown' }
+        : {
+            cash: treasuryBalance,
+            ledgerTotal: ledgerTotal.toString(),
+            ledgerSource,
+            difference: (BigInt(treasuryBalance) - ledgerTotal).toString(),
+            status: BigInt(treasuryBalance) === ledgerTotal ? 'match' : 'mismatch',
+          };
+
+    return {
       giftsByFund,
       treasuryBalance,
+      reconciliation,
       payouts: { paidCount: paid.length, paidAmount: sumAmounts(paid.map((p) => p.amount)) },
       holds,
       receiptNote: RECEIPT_NOTE,
-    });
-  });
+    };
+  }
 
-  app.get('/api/export.csv', (c) => {
-    const header = ['type', 'id', 'created_at', 'updated_at', 'fund', 'donor', 'vendor', 'amount_in', 'origin_asset', 'amount_usdc', 'status', 'deposit_address', 'memo'];
+  app.get('/api/summary', async (c) => c.json(await computeSummary()));
+
+  app.get('/api/export.csv', async (c) => {
+    const summary = await computeSummary();
+    const header = [
+      'type',
+      'id',
+      'created_at',
+      'updated_at',
+      'paid_at',
+      'fund',
+      'restriction',
+      'donor',
+      'vendor',
+      'amount_in',
+      'origin_asset',
+      'amount_usdc',
+      'status',
+      'deposit_address',
+      'payment_ref',
+      'request_ref',
+      'memo',
+    ];
     const rows: unknown[][] = [];
     for (const g of store.listGifts()) {
-      rows.push(['gift', g.id, g.createdAt, g.updatedAt, g.fund, g.donor, '', g.amountIn, g.originAsset, g.settledAmount ?? g.amountOut, g.status, g.depositAddress, '']);
+      rows.push([
+        'gift', g.id, g.createdAt, g.updatedAt, '', g.fund, FUND_RESTRICTION[g.fund], g.donor, '', g.amountIn, g.originAsset,
+        g.settledAmount ?? g.amountOut, g.status, g.depositAddress, g.settlementTxHash ?? '', '', '',
+      ]);
     }
     for (const p of store.listPayouts()) {
-      rows.push(['payout', p.billId, p.createdAt, p.updatedAt, p.fund, '', p.vendor, '', '', p.amount, p.status, '', p.memo]);
+      rows.push([
+        'payout', p.billId, p.createdAt, p.updatedAt, p.paidAt ?? '', p.fund, FUND_RESTRICTION[p.fund], '', p.vendor, '', '',
+        p.amount, p.status, '', p.paymentTxHash ?? '', p.requestTxHash ?? '', p.memo,
+      ]);
     }
-    const lines = [`# ${RECEIPT_NOTE}`, header.join(','), ...rows.map((r) => r.map(csvCell).join(','))];
+    const r = summary.reconciliation;
+    const recon = [
+      '# per-fund reconciliation (USDC atomic units; available = received - paid - held)',
+      'fund,restriction,gifts,received,paid,held,available',
+      ...FUNDS.map((f) => {
+        const x = summary.giftsByFund[f];
+        return [f, x.restriction, x.count, x.received, x.paidOut, x.held, x.available].map(csvCell).join(',');
+      }),
+      `# treasury cash (on-chain): ${r.cash ?? 'unknown'}; fund ledgers total (received - paid, from ${r.ledgerSource}): ${r.ledgerTotal}; ${r.status}${
+        r.difference && r.status === 'mismatch' ? ` (cash - ledgers = ${r.difference})` : ''
+      }`,
+    ];
+    const lines = [
+      `# ${RECEIPT_NOTE}`,
+      `# ${BOUNDARY_PUB_1771}`,
+      `# ${BOUNDARY_NOT_GAAP}`,
+      header.join(','),
+      ...rows.map((row) => row.map(csvCell).join(',')),
+      '',
+      ...recon,
+    ];
     c.header('content-type', 'text/csv; charset=utf-8');
     c.header('content-disposition', 'attachment; filename="openlid-export.csv"');
     return c.body(lines.join('\n') + '\n');

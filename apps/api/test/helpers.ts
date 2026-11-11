@@ -11,7 +11,17 @@ import {
 } from '../src/near.js';
 import { HttpOneClickClient } from '../src/oneclick.js';
 import { JsonStore } from '../src/store.js';
-import { FUNDS, isFund, type Fund, type HoldStatus, type HoldView, type OneClickStatus, type PayoutView } from '../src/types.js';
+import {
+  FUND_RESTRICTION,
+  FUNDS,
+  isFund,
+  type Fund,
+  type FundLedgerView,
+  type HoldStatus,
+  type HoldView,
+  type OneClickStatus,
+  type PayoutView,
+} from '../src/types.js';
 
 export const TEST_API_KEY = 'test-1click-api-key-not-real';
 
@@ -78,8 +88,9 @@ export class MockOneClick {
 /**
  * In-memory stand-in for the treasury contract, following INTERFACES.md policy:
  * allowlisted + <= per-bill limit + within cap => paid; allowlisted + over limit + within cap => held; else panic.
- * Like the contract, every bill names a fund and (paid or held) must fit that fund's
- * available = received - paid. `creditFund` is the owner-only `credit_fund` ledger update.
+ * Like the contract, every bill names a fund and (paid or held) must fit that fund's uncommitted
+ * available = received - paid - held; a hold reserves its amount. `creditFund` is the owner-only
+ * `credit_fund` ledger update. `cash` stands in for the treasury's NEP-141 balance.
  */
 export class FakeTreasury implements NearContractClient {
   allowlist = new Set<string>();
@@ -89,13 +100,22 @@ export class FakeTreasury implements NearContractClient {
   payouts = new Map<string, PayoutView>();
   holds = new Map<string, HoldView>();
   requests: RequestPayoutArgs[] = [];
-  ledger = new Map<Fund, { received: bigint; paid: bigint }>(FUNDS.map((f) => [f, { received: 0n, paid: 0n }]));
+  ledger = new Map<Fund, { received: bigint; paid: bigint; held: bigint }>(
+    FUNDS.map((f) => [f, { received: 0n, paid: 0n, held: 0n }]),
+  );
   creditedGifts = new Set<string>();
+  /** Treasury token balance (ft_balance_of). Minting adds; a successful transfer subtracts. */
+  cash = 0n;
   /** When set, the next ft_transfer "fails" and is rolled back, like on_payout_transfer. */
   failNextTransfer = false;
+  private txs = 0;
 
   private panic(msg: string): never {
     throw new ContractRejectedError(msg);
+  }
+
+  private tx(): string {
+    return `fake-near-tx-${++this.txs}`;
   }
 
   private assertFund(fund: unknown): asserts fund is Fund {
@@ -104,11 +124,11 @@ export class FakeTreasury implements NearContractClient {
 
   available(fund: Fund): bigint {
     const l = this.ledger.get(fund)!;
-    return l.received > l.paid ? l.received - l.paid : 0n;
+    const a = l.received - l.paid - l.held;
+    return a > 0n ? a : 0n;
   }
 
-  private assertCovers(fund: Fund, amount: bigint) {
-    const available = this.available(fund);
+  private assertCovers(fund: Fund, amount: bigint, available = this.available(fund)) {
     if (amount > available) this.panic(`insufficient fund balance: ${fund} has ${available} available, bill needs ${amount}`);
   }
 
@@ -123,15 +143,21 @@ export class FakeTreasury implements NearContractClient {
   }
 
   /** Records the payout and fund usage; on a failed transfer rolls both back and returns false. */
-  private pay(view: PayoutView): boolean {
+  private pay(view: PayoutView, fromHold: boolean): boolean {
     const amount = BigInt(view.amount);
+    const l = this.ledger.get(view.fund)!;
     this.spent += amount;
-    this.ledger.get(view.fund)!.paid += amount;
+    l.paid += amount;
+    if (fromHold) l.held -= amount;
     this.payouts.set(view.bill_id, view);
-    if (!this.failNextTransfer) return true;
+    if (!this.failNextTransfer) {
+      this.cash -= amount;
+      return true;
+    }
     this.failNextTransfer = false;
     this.spent -= amount;
-    this.ledger.get(view.fund)!.paid -= amount;
+    l.paid -= amount;
+    if (fromHold) l.held += amount; // the hold returns to held, reservation and all
     this.payouts.delete(view.bill_id);
     return false;
   }
@@ -147,14 +173,16 @@ export class FakeTreasury implements NearContractClient {
     if (this.spent + amount > this.monthlyCap) this.panic('monthly cap exceeded');
     this.assertCovers(args.fund, amount);
     const view = { bill_id: args.billId, vendor: args.vendor, amount: args.amount, memo: args.memo, fund: args.fund };
+    const txHash = this.tx();
     if (amount <= this.perBillLimit) {
-      if (!this.pay({ ...view, status: 'paid' })) {
+      if (!this.pay({ ...view, status: 'paid' }, false)) {
         this.panic(`ft_transfer failed and the payout was rolled back for ${args.billId} (treasury may lack token balance)`);
       }
-      return { status: 'paid' as const };
+      return { status: 'paid' as const, txHash };
     }
+    this.ledger.get(args.fund)!.held += amount;
     this.holds.set(args.billId, { ...view, status: 'held' });
-    return { status: 'held' as const };
+    return { status: 'held' as const, txHash };
   }
   async getPayout(billId: string) {
     return this.payouts.get(billId) ?? null;
@@ -170,23 +198,46 @@ export class FakeTreasury implements NearContractClient {
     if (!h || h.status !== 'held') this.panic('hold is not held');
     if (!this.allowlist.has(h.vendor)) this.panic('vendor is not active on the allowlist');
     if (this.spent + BigInt(h.amount) > this.monthlyCap) this.panic('monthly cap exceeded');
-    this.assertCovers(h.fund, BigInt(h.amount));
+    // Re-check with this hold's own reservation set aside (the contract's assert_hold_covered).
+    const l = this.ledger.get(h.fund)!;
+    const excl = l.received - l.paid - (l.held - BigInt(h.amount));
+    this.assertCovers(h.fund, BigInt(h.amount), excl > 0n ? excl : 0n);
     h.status = 'approved';
     // The on-chain call succeeds even when the transfer callback rolls back; the hold is then `held` again.
-    if (!this.pay({ bill_id: billId, vendor: h.vendor, amount: h.amount, memo: h.memo, fund: h.fund, status: 'paid' })) {
+    if (!this.pay({ bill_id: billId, vendor: h.vendor, amount: h.amount, memo: h.memo, fund: h.fund, status: 'paid' }, true)) {
       h.status = 'held';
     }
+    return { txHash: this.tx() };
   }
   async rejectHold(billId: string) {
     const h = this.holds.get(billId);
     if (!h || h.status !== 'held') this.panic('hold is not held');
+    this.ledger.get(h.fund)!.held -= BigInt(h.amount);
     h.status = 'rejected';
+    return { txHash: this.tx() };
+  }
+  async treasuryBalance() {
+    return this.cash.toString();
+  }
+  async fundLedger(): Promise<FundLedgerView[]> {
+    return FUNDS.map((f) => {
+      const l = this.ledger.get(f)!;
+      return {
+        fund: f,
+        restriction: FUND_RESTRICTION[f],
+        received: l.received.toString(),
+        paid: l.paid.toString(),
+        held: l.held.toString(),
+        available: this.available(f).toString(),
+      };
+    });
   }
 }
 
 /**
- * Records test-FT credits instead of minting on testnet, and (like NearTestFtSettlement) then credits
- * the treasury's fund ledger. Set `fail` to fail the mint, `failCredit` to fail only credit_fund.
+ * Records test-FT credits instead of minting on testnet (the fake mint adds to `treasury.cash`), and, like
+ * NearTestFtSettlement, then credits the treasury's fund ledger. Set `fail` to fail the mint, `failCredit`
+ * to fail only credit_fund (cash is then minted but no fund is credited: a reconciliation mismatch).
  */
 export class FakeSettlement implements TestnetSettlement {
   credits: CreditTreasuryArgs[] = [];
@@ -197,6 +248,7 @@ export class FakeSettlement implements TestnetSettlement {
   async creditTreasury(args: CreditTreasuryArgs) {
     if (this.fail) throw this.fail;
     this.minted.push(args);
+    if (this.treasury) this.treasury.cash += BigInt(args.amount);
     if (this.failCredit) throw this.failCredit;
     this.treasury?.creditFund(args.fund, args.amount, args.giftId);
     this.credits.push(args);

@@ -1,5 +1,18 @@
 export const RECEIPT_NOTE = 'demo, not a tax document' as const;
 
+/**
+ * Scope boundaries shown on the treasurer page; D2 and D3 are repeated in the CSV header.
+ * Keep in sync with apps/web/src/types.ts BOUNDARY_LINES.
+ */
+export const BOUNDARY_PUB_1771 =
+  'This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.' as const;
+export const BOUNDARY_NOT_GAAP =
+  'This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.' as const;
+export const BOUNDARY_UNAUTHENTICATED =
+  'In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.' as const;
+export const BOUNDARY_SCOPE =
+  'This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.' as const;
+
 /** Every quote is a 1Click dry run; no payable deposit address is ever requested. */
 export const QUOTE_MODE = 'dry_run' as const;
 
@@ -16,6 +29,18 @@ export type Fund = (typeof FUNDS)[number];
 export function isFund(v: unknown): v is Fund {
   return typeof v === 'string' && (FUNDS as readonly string[]).includes(v);
 }
+
+/**
+ * Net-asset class labels in current US GAAP wording (ASU 2016-14), matching the contract's
+ * `fund_restriction`. A label only: every fund is siloed and pays only bills tagged to it, so
+ * `general` cannot pay a missions or building bill (that would be an interfund transfer, not built).
+ */
+export type FundRestriction = 'with donor restrictions' | 'without donor restrictions';
+export const FUND_RESTRICTION: Record<Fund, FundRestriction> = {
+  general: 'without donor restrictions',
+  missions: 'with donor restrictions',
+  building: 'with donor restrictions',
+};
 
 export type GiftStatus = 'pending_deposit' | 'processing' | 'settled' | 'refunded' | 'failed';
 
@@ -139,6 +164,37 @@ export interface HoldView {
   status: HoldStatus;
 }
 
+/** Contract `FundView` (`get_fund_ledger`). `available = received - paid - held`. */
+export interface FundLedgerView {
+  fund: Fund;
+  restriction: FundRestriction;
+  received: string;
+  paid: string;
+  available: string;
+  held: string;
+}
+
+/** GET /api/payouts row: the contract view plus this API's audit trail (null when unknown). */
+export interface PayoutRow extends PayoutView {
+  /** When the bill was submitted to POST /api/payouts/request (ISO 8601 UTC). */
+  requestedAt: string | null;
+  /** When the payment was recorded as paid by this API (ISO 8601 UTC). */
+  paidAt: string | null;
+  /** NEAR tx hash that paid it: the request_payout tx (auto-pay) or the approve_hold tx. */
+  paymentTxHash: string | null;
+  /** NEAR tx hash of the request_payout call. */
+  requestTxHash: string | null;
+}
+
+/** GET /api/holds row: the contract view plus this API's audit trail (null when unknown). */
+export interface HoldRow extends HoldView {
+  requestedAt: string | null;
+  requestTxHash: string | null;
+  /** Set once approved: the approve_hold tx and when. */
+  paidAt: string | null;
+  paymentTxHash: string | null;
+}
+
 /** Local record of payout requests this API submitted to the contract. */
 export interface PayoutRecord {
   billId: string;
@@ -149,13 +205,17 @@ export interface PayoutRecord {
   status: 'paid' | 'held' | 'rejected';
   createdAt: string;
   updatedAt: string;
+  requestTxHash?: string | null;
+  paymentTxHash?: string | null;
+  paidAt?: string | null;
 }
 
 /**
  * Per-fund row of GET /api/summary `giftsByFund`. Amounts are USDC atomic units.
- * `available = received - paidOut`; outstanding holds (`held`) do not reduce it.
+ * `available = received - paidOut - held` (uncommitted): outstanding holds are reserved, as on-chain.
  */
 export interface FundSummary {
+  restriction: FundRestriction;
   /** Settled gift count. */
   count: number;
   /** Sum of settled gift amounts. */
@@ -165,4 +225,19 @@ export interface FundSummary {
   /** Sum of outstanding (`held`) holds on this fund. */
   held: string;
   available: string;
+}
+
+/**
+ * Cash vs fund ledgers (GET /api/summary `reconciliation`). `cash` is the live on-chain NEP-141 balance of
+ * the treasury; `ledgerTotal` is the sum over funds of (received - paid) = sum of (available + held), read
+ * from the contract's `get_fund_ledger` when possible (`ledgerSource: "chain"`), else from this API's
+ * records (`"api"`). `status` is `mismatch` whenever they differ, `unknown` if cash cannot be read.
+ */
+export interface Reconciliation {
+  cash: string | null;
+  ledgerTotal: string;
+  ledgerSource: 'chain' | 'api';
+  /** cash - ledgerTotal (may be negative), or null when cash is unknown. */
+  difference: string | null;
+  status: 'match' | 'mismatch' | 'unknown';
 }
