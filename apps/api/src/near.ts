@@ -132,8 +132,13 @@ export interface NearRpcClientOptions {
   usdcTokenId?: string;
 }
 
+/**
+ * Default NEAR JSON-RPC per network; override with OPENLID_NEAR_RPC_URL. The official
+ * `https://rpc.testnet.near.org` is deprecated (it answers HTTP 429 with a JSON-RPC error pointing clients
+ * elsewhere), so testnet defaults to FastNear's public endpoint. No mainnet default: testnet-only demo.
+ */
 export function defaultRpcUrl(network: string): string {
-  if (network === 'testnet') return 'https://rpc.testnet.near.org';
+  if (network === 'testnet') return 'https://rpc.testnet.fastnear.com';
   if (network === 'local' || network === 'sandbox') return 'http://127.0.0.1:3030';
   throw new Error(`OPENLID_NETWORK=${network} is not supported by this demo (use testnet or local)`);
 }

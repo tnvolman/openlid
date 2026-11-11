@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import {
+  defaultRpcUrl,
   NearRpcContractClient,
   NearTestFtSettlement,
   UnconfiguredNearClient,
@@ -27,6 +28,7 @@ if (config.contractId && config.agentAccountId && agentKeyFile) {
   // Agent key: restricted function-call key for request_payout only (verified on-chain before first use).
   near = new NearRpcContractClient({
     network: config.network,
+    rpcUrl: config.rpcUrl,
     contractId: config.contractId,
     agentAccountId: config.agentAccountId,
     agentKeyFile,
@@ -46,6 +48,7 @@ let settlement: TestnetSettlement;
 if (config.network === 'testnet' && config.contractId && config.usdcTokenId && config.ownerAccountId && ownerKeyFile) {
   settlement = new NearTestFtSettlement({
     network: config.network,
+    rpcUrl: config.rpcUrl,
     tokenId: config.usdcTokenId,
     treasuryId: config.contractId,
     minterAccountId: config.ownerAccountId,
@@ -75,10 +78,20 @@ const app = createApp({
   usdcTokenId: config.usdcTokenId,
 });
 
+// Host only (no path or query, in case a provider URL ever carries a token).
+const rpcHost = (() => {
+  try {
+    return new URL(config.rpcUrl ?? defaultRpcUrl(config.network)).host;
+  } catch {
+    return 'invalid OPENLID_NEAR_RPC_URL';
+  }
+})();
+
 serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
   // Log only non-secret settings: no keys, no key file contents.
   console.log(
     `openlid api listening on http://${info.address}:${info.port} (network=${config.network}, data=${config.dataDir}, ` +
+      `rpc=${rpcHost}, ` +
       `1click=${oneClickLive ? `${config.oneClickBaseUrl} dry-run` : 'local dry-run stub (no API key, no network)'}, ` +
       `near ${near instanceof UnconfiguredNearClient ? 'not configured' : 'configured'}, ` +
       `settlement ${settlement instanceof UnconfiguredSettlement ? 'not configured' : 'test FT mint'})`,

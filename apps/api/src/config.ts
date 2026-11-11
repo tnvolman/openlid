@@ -6,6 +6,8 @@ export interface Config {
   port: number;
   dataDir: string;
   network: string;
+  /** NEAR JSON-RPC URL (OPENLID_NEAR_RPC_URL). Unset: `defaultRpcUrl(network)` in near.ts. */
+  rpcUrl?: string;
   contractId?: string;
   usdcTokenId?: string;
   ownerAccountId?: string;
@@ -36,6 +38,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: Number(opt(env, 'OPENLID_API_PORT') ?? 8787),
     dataDir: resolve(opt(env, 'OPENLID_DATA_DIR') ?? './data'),
     network,
+    rpcUrl: opt(env, 'OPENLID_NEAR_RPC_URL'),
     contractId: opt(env, 'OPENLID_CONTRACT_ID'),
     usdcTokenId: opt(env, 'OPENLID_USDC_TOKEN_ID'),
     ownerAccountId: opt(env, 'OPENLID_OWNER_ACCOUNT_ID'),

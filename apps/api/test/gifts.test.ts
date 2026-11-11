@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
-import { ContractRejectedError, UnconfiguredSettlement } from '../src/near.js';
+import { ContractRejectedError, defaultRpcUrl, UnconfiguredSettlement } from '../src/near.js';
 import { createDryRunStubFetch, DRY_RUN_STUB_BASE_URL, HttpOneClickClient, type OneClickQuoteRequest } from '../src/oneclick.js';
 import { JsonStore } from '../src/store.js';
 import { giftBody, makeHarness, TEST_API_KEY } from './helpers.js';
@@ -618,5 +618,19 @@ describe('config', () => {
     assert.equal(c.network, 'testnet');
     assert.equal(c.demoKeysDir, '/tmp/x/.demo-keys');
     assert.equal(c.oneClickApiKey, undefined);
+  });
+
+  it('NEAR RPC: testnet defaults to FastNear (rpc.testnet.near.org is deprecated); OPENLID_NEAR_RPC_URL overrides', () => {
+    assert.equal(defaultRpcUrl('testnet'), 'https://rpc.testnet.fastnear.com');
+    assert.notEqual(defaultRpcUrl('testnet'), 'https://rpc.testnet.near.org');
+    assert.equal(defaultRpcUrl('local'), 'http://127.0.0.1:3030');
+    assert.equal(defaultRpcUrl('sandbox'), 'http://127.0.0.1:3030');
+    assert.throws(() => defaultRpcUrl('mainnet'), /not supported/);
+
+    assert.equal(loadConfig({}).rpcUrl, undefined);
+    assert.equal(loadConfig({ OPENLID_NEAR_RPC_URL: 'https://archival-rpc.testnet.near.org' }).rpcUrl, 'https://archival-rpc.testnet.near.org');
+    assert.equal(loadConfig({ OPENLID_NEAR_RPC_URL: '  https://rpc.example.test  ' }).rpcUrl, 'https://rpc.example.test');
+    assert.equal(loadConfig({ OPENLID_NEAR_RPC_URL: '   ' }).rpcUrl, undefined);
+    assert.equal(loadConfig({ OPENLID_NEAR_RPC_URL: '' }).rpcUrl, undefined);
   });
 });
