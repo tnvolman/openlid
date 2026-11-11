@@ -1,26 +1,156 @@
-body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 960px; padding: 1rem; color: #1d1d1f; }
-h1 { margin-bottom: 0.25rem; }
-h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.25rem; margin-top: 2rem; }
-h3 { margin-bottom: 0.25rem; }
-.receipt-note { display: inline-block; background: #fff4ce; border: 1px solid #e0c35a; padding: 0.2rem 0.5rem; font-weight: 600; }
-.notice { color: #444; font-size: 0.9rem; margin: 0.4rem 0; }
-.meta { color: #555; font-size: 0.9rem; }
-.badge { background: #e7e7ff; border-radius: 4px; padding: 0 0.4rem; margin-left: 0.5rem; }
-.toolbar button { margin-right: 0.5rem; }
-.error { color: #a00; }
-table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
-th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-.status { font-weight: 600; }
-.status-settled, .status-paid, .status-approved { color: #17663a; }
-.status-refunded, .status-rejected { color: #8a5a00; }
-.status-failed { color: #a00; }
-.status-held { color: #6b3fa0; }
-.empty { color: #777; font-style: italic; }
-footer { margin-top: 3rem; color: #777; font-size: 0.8rem; }
-.boundaries { font-size: 0.85rem; color: #333; background: #f6f6f6; border-left: 3px solid #999; margin: 0.5rem 0; padding: 0.4rem 0.5rem 0.4rem 1.6rem; }
-.note { color: #555; font-size: 0.85rem; }
-.recon { font-weight: 600; }
-.recon-match { color: #17663a; }
-.recon-mismatch { color: #fff; background: #a00; padding: 0.3rem 0.5rem; border-radius: 4px; }
-.recon-unknown { color: #8a5a00; }
+@import "./theme.css";
+
+/* Base */
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font-ui); -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 32px; }
+h1, h2, h3 { text-wrap: balance; }
+p { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+.nowrap { white-space: nowrap; }
+.cap { text-transform: capitalize; }
+.m-only { display: none; }
+[hidden] { display: none !important; }
+
+/* Header: typographic wordmark, endorser, quiet demo pill */
+.site-header { border-bottom: 1px solid var(--line); }
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 76px; }
+.wordmark { font-family: var(--font-display); font-weight: 600; font-size: 26px; letter-spacing: -0.01em; line-height: 1; white-space: nowrap; }
+.endorser { font-size: 12px; color: var(--stone); margin-top: 3px; white-space: nowrap; }
+.receipt-note { font-size: 12px; color: var(--stone); border: 1px solid var(--line-strong); border-radius: 99px; padding: 4px 10px; white-space: nowrap; }
+
+/* Page heading */
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 40px 0 0; }
+h1 { font-family: var(--font-display); font-weight: 500; font-size: 34px; letter-spacing: -0.015em; line-height: 1.15; margin: 0 0 4px; }
+.sub { color: var(--stone); }
+.notice { color: var(--stone); font-size: 13px; margin: 6px 0 28px; text-wrap: pretty; }
+.toolbar { display: flex; gap: 8px; }
+.error { margin: -12px 0 24px; padding: 10px 14px; border: 1px solid var(--bad-line); background: var(--bad-bg); color: var(--bad-ink); border-radius: var(--radius-btn); font-size: 14px; }
+
+/* Buttons: copper is reserved for Approve and Reject; everything else is a quiet outline */
+.btn { font: 500 13px/1.2 var(--font-ui); border-radius: var(--radius-btn); padding: 7px 14px; border: 1px solid var(--line-strong); background: var(--card); color: var(--ink); cursor: pointer; white-space: nowrap; }
+.btn:hover:not(:disabled) { border-color: var(--stone); }
+.btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.btn:disabled { cursor: progress; opacity: 0.65; }
+.btn-approve { background: var(--copper); border-color: var(--copper); color: #fff; }
+.btn-approve:hover:not(:disabled) { background: var(--copper-hover); border-color: var(--copper-hover); }
+.btn-reject { background: transparent; border-color: var(--copper); color: var(--copper); }
+.btn-reject:hover:not(:disabled) { border-color: var(--copper-hover); color: var(--copper-hover); }
+
+/* KPI cards */
+.kpis { display: flex; gap: 16px; }
+.kpi { flex: 1 1 0; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
+.kpi-label { font-size: 12px; color: var(--stone); text-transform: uppercase; letter-spacing: 0.06em; }
+.kpi-num { font-family: var(--font-mono); font-size: 26px; font-weight: 500; margin-top: 8px; line-height: 1.25; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.unit { font-size: 14px; color: var(--stone); font-weight: 500; }
+.kpi-note { margin-top: 10px; font-size: 13px; color: var(--stone); text-wrap: pretty; }
+.kpi-note + .recon { margin-top: 6px; }
+.recon { margin-top: 10px; font-size: 13px; font-weight: 500; text-wrap: pretty; }
+.recon-match { color: var(--ok-ink); }
+.recon-match::before { content: "✓ "; }
+.recon-mismatch { color: var(--bad-ink); background: var(--bad-bg); border: 1px solid var(--bad-line); border-radius: var(--radius-btn); padding: 8px 10px; font-weight: 400; }
+.recon-unknown { color: var(--stone); }
+.recon-unknown::before { content: "? "; font-weight: 600; }
+.note { color: var(--stone); font-size: 13px; margin-top: 12px; max-width: 78ch; text-wrap: pretty; }
+.recon-note { margin-top: 12px; }
+
+/* Sections and tables */
+section { margin-top: 36px; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 20px; margin: 0 0 12px; }
+h3 { font-family: var(--font-display); font-weight: 600; font-size: 16px; margin: 20px 0 8px; }
+h3 small { font-family: var(--font-ui); font-weight: 400; font-size: 13px; color: var(--stone); }
+.fund:first-child h3 { margin-top: 0; }
+.table-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+caption { caption-side: bottom; text-align: left; font-size: 12px; color: var(--stone); background: var(--soft); border-top: 1px solid var(--line); padding: 10px 16px; }
+th { text-align: left; font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--stone); background: var(--soft); padding: 12px 16px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 14px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.funds td.fund-name { text-transform: capitalize; }
+.funds td.restriction { color: var(--stone); font-size: 14px; }
+.empty { color: var(--stone); background: var(--card); border: 1px dashed var(--line-strong); border-radius: var(--radius); padding: 16px 20px; }
+
+/* Bill rows: memo as the name, bill id on a mono meta line */
+td.bill { min-width: 180px; }
+.bill-name { display: block; }
+.bill-to { display: block; color: var(--stone); font-size: 13px; overflow-wrap: anywhere; }
+td code { white-space: nowrap; }
+.bill-meta.m-only { display: none; }
+.bill-meta { display: block; font-family: var(--font-mono); font-size: 13px; color: var(--stone); margin-top: 2px; }
+.bill-meta code { color: inherit; }
+.holds td:nth-child(2), .payouts td:nth-child(2) { text-transform: capitalize; }
+/* Vendor and memo live in the bill cell (memo as the name, "to vendor" under it), so their columns stay out of view */
+.holds th:nth-child(3), .holds td:nth-child(3), .payouts th:nth-child(3), .payouts td:nth-child(3),
+.holds th:nth-child(5), .holds td:nth-child(5), .payouts th:nth-child(5), .payouts td:nth-child(5) { display: none; }
+.holds td:nth-child(6), .payouts td:nth-child(6), .payouts td:nth-child(7) { font-size: 13px; color: var(--stone); white-space: nowrap; }
+.holds td:nth-child(7) code, .payouts td:nth-child(8) code { color: var(--stone); }
+th.actions { text-align: right; }
+.acts { display: flex; gap: 8px; justify-content: flex-end; }
+.gifts td:first-child, .gifts td:nth-child(4) code { font-family: var(--font-mono); font-size: 13px; }
+.gifts td.origin { font-family: var(--font-mono); font-size: 12px; color: var(--stone); }
+
+/* Status pills: neutral tints; muted green for done, muted red for failed */
+.pill, .badge { display: inline-block; font-size: 12px; line-height: 1.5; border-radius: 99px; padding: 2px 10px; white-space: nowrap; text-transform: capitalize; }
+.status { background: var(--quiet-bg); color: var(--quiet-ink); }
+.status-paid, .status-settled, .status-approved { background: var(--ok-bg); color: var(--ok-ink); }
+.status-held, .status-pending_deposit, .status-processing { background: var(--wait-bg); color: var(--wait-ink); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.status-rejected, .status-refunded { background: var(--quiet-bg); color: var(--quiet-ink); }
+.status-failed { background: var(--bad-bg); color: var(--bad-ink); }
+.badge { background: transparent; color: var(--stone); box-shadow: inset 0 0 0 1px var(--line-strong); margin-left: 4px; text-transform: none; }
+
+/* Footer: plain disclaimer line, full legal notices in a native disclosure */
+.site-footer { margin-top: 48px; padding-top: 24px; padding-bottom: 40px; font-size: 13px; color: var(--stone); }
+.site-footer::before { content: ""; display: block; border-top: 1px solid var(--line); margin-bottom: 24px; }
+.footer-lede { text-wrap: pretty; }
+.legal { margin-top: 14px; }
+.legal summary { cursor: pointer; color: var(--ink); font-weight: 500; width: fit-content; }
+.legal summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
+.boundaries { margin: 10px 0 0; padding-left: 1.2rem; max-width: 90ch; }
+.boundaries li { margin-top: 6px; text-wrap: pretty; }
+.site-footer .meta { margin-top: 16px; }
+.site-footer .credit { margin-top: 4px; }
+
+/* Phone */
+@media (max-width: 700px) {
+  .wrap { padding: 0 20px; }
+  .bar { height: 68px; }
+  .wordmark { font-size: 22px; }
+  .receipt-note { font-size: 11px; padding: 3px 8px; }
+  .page-head { margin-top: 28px; }
+  h1 { font-size: 28px; }
+  .toolbar { width: 100%; }
+  .toolbar .btn { flex: 1; }
+  .notice { margin-bottom: 20px; }
+  .kpis { flex-wrap: wrap; gap: 12px; }
+  .kpi { flex: 1 1 calc(50% - 6px); padding: 16px; }
+  .kpi-num { font-size: 18px; }
+  .unit { font-size: 11px; }
+  .kpi-label { font-size: 11px; }
+  .kpi-note, .recon { font-size: 12px; }
+  th, td { padding: 12px; }
+  caption { padding: 10px 12px; }
+  .hide-m { display: none; }
+  .m-only { display: inline; }
+  .bill-meta.m-only { display: block; }
+  .bill-meta { font-size: 12px; }
+  td.num { font-size: 13px; }
+  th, td { padding: 12px 10px; }
+  th:first-child, td:first-child { padding-left: 14px; }
+  th:last-child, td:last-child { padding-right: 14px; }
+  .pill, .badge { font-size: 11px; padding: 1px 8px; }
+  /* Funds: Fund, Held, Available; the restriction label moves under the fund name */
+  .funds td.fund-name::after { content: attr(data-restriction); display: block; text-transform: none; color: var(--stone); font-size: 12px; line-height: 1.35; margin-top: 2px; }
+  td.bill { min-width: 0; }
+  /* Holds: bill (with fund and amount on the meta line) and the decision; Reject stacks over Approve */
+  .holds th:not(:first-child):not(:last-child), .holds td:not(:first-child):not(:last-child) { display: none; }
+  .holds .acts { flex-direction: column; align-items: stretch; gap: 6px; }
+  .holds .btn { min-width: 84px; }
+  /* Payouts: bill (fund, paid time, and tx on the meta lines), amount, status */
+  .payouts th:nth-child(n+2):nth-child(-n+3), .payouts td:nth-child(n+2):nth-child(-n+3),
+  .payouts th:nth-child(n+5):nth-child(-n+8), .payouts td:nth-child(n+5):nth-child(-n+8) { display: none; }
+  /* Gifts: donor (deposit address under it), amount, status */
+  .gifts th:nth-child(n+4), .gifts td.deposit, .gifts td.origin { display: none; }
+  .gifts td.donor { font-size: 12px; }
+}

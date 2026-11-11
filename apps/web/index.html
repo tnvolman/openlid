@@ -4,40 +4,42 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Example Community Church — OpenLid treasurer (demo, not a tax document)</title>
+    <link rel="preload" href="/fonts/Geistwght.ttf" as="font" type="font/ttf" crossorigin />
+    <link rel="preload" href="/fonts/GeistMonowght.ttf" as="font" type="font/ttf" crossorigin />
+    <link rel="preload" href="/fonts/SourceSerif4opsz-wght.ttf" as="font" type="font/ttf" crossorigin />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header>
-      <h1>Example Community Church — OpenLid treasurer</h1>
-      <p class="receipt-note" id="receipt-note">demo, not a tax document</p>
+    <header class="site-header">
+      <div class="wrap bar">
+        <div class="brand">
+          <div class="wordmark">OpenLid</div>
+          <div class="endorser">A Journey Digital project.</div>
+        </div>
+        <p class="receipt-note" id="receipt-note">demo, not a tax document</p>
+      </div>
+    </header>
+    <main class="wrap">
+      <div class="page-head">
+        <div>
+          <h1>Treasury</h1>
+          <p class="sub">
+            <span class="nowrap">Example Community Church</span> · <span class="nowrap">OpenLid treasurer</span> ·
+            <span class="nowrap">NEAR testnet</span><span class="nowrap" id="updated"></span>
+          </p>
+        </div>
+        <div class="toolbar">
+          <button id="refresh" type="button" class="btn btn-quiet">Refresh</button>
+          <button id="download-csv" type="button" class="btn btn-quiet">Download CSV</button>
+        </div>
+      </div>
       <p class="notice" id="testnet-notice">
         NEAR testnet only. The cross-chain leg is a dry-run 1Click quote plus a simulated settlement on NEAR testnet. No real funds.
       </p>
-      <ul class="boundaries" id="boundaries" aria-label="What this demo is not">
-        <li>This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.</li>
-        <li>This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.</li>
-        <li>In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.</li>
-        <li>This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.</li>
-        <li>Gifts of USDC or other digital assets are noncash property, not cash. Amounts shown are book value at receipt (church books only, as of the date and time received), not a deductible value. This is not a noncash acknowledgment and does not state fair market value; Forms 8283 and 8282 and any appraisal are out of scope and are the donor's or church's later tax job if they apply. A CPA must confirm current rules.</li>
-        <li>OpenLid never holds or moves donor funds for someone else: gifts go to a treasury the church controls. A legal review is required before any real money. This demo is testnet only; no real funds.</li>
-      </ul>
-      <p class="meta">
-        API: <code id="api-base"></code>
-        <span id="mode-badge" class="badge" hidden>mock data</span>
-      </p>
-      <div class="toolbar">
-        <button id="refresh" type="button">Refresh</button>
-        <button id="download-csv" type="button">Download CSV</button>
-      </div>
       <p id="error" class="error" role="alert" hidden></p>
-    </header>
-    <main>
+      <div id="summary">Loading…</div>
       <section>
-        <h2>Summary</h2>
-        <div id="summary">Loading…</div>
-      </section>
-      <section>
-        <h2>Outstanding holds</h2>
+        <h2>Bills on hold</h2>
         <div id="holds">Loading…</div>
       </section>
       <section>
@@ -49,7 +51,27 @@
         <div id="gifts">Loading…</div>
       </section>
     </main>
-    <footer>OpenLid by Michael McClanahan (@tnvolman). NEAR testnet only, $0 spend.</footer>
+    <footer class="wrap site-footer">
+      <p class="footer-lede">
+        This is a demo on NEAR testnet. Amounts are test tokens with no cash value. It is not a tax document or a giving receipt.
+      </p>
+      <details class="legal">
+        <summary>Full legal notices: what this demo is not (6)</summary>
+        <ul class="boundaries" id="boundaries" aria-label="What this demo is not">
+          <li>This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.</li>
+          <li>This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.</li>
+          <li>In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.</li>
+          <li>This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.</li>
+          <li>Gifts of USDC or other digital assets are noncash property, not cash. Amounts shown are book value at receipt (church books only, as of the date and time received), not a deductible value. This is not a noncash acknowledgment and does not state fair market value; Forms 8283 and 8282 and any appraisal are out of scope and are the donor's or church's later tax job if they apply. A CPA must confirm current rules.</li>
+          <li>OpenLid never holds or moves donor funds for someone else: gifts go to a treasury the church controls. A legal review is required before any real money. This demo is testnet only; no real funds.</li>
+        </ul>
+      </details>
+      <p class="meta">
+        API: <code id="api-base"></code>
+        <span id="mode-badge" class="badge" hidden>mock data</span>
+      </p>
+      <p class="credit">OpenLid by Michael McClanahan (@tnvolman). NEAR testnet only, $0 spend.</p>
+    </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

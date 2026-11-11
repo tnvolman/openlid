@@ -1,0 +1,36 @@
+/*
+ * OpenLid brand tokens. Every color, font, and the one accent live here so a brand tweak is a small change.
+ * Fonts are self-hosted from /fonts (SIL OFL 1.1; license files sit next to them in public/fonts/).
+ */
+@font-face { font-family: "Source Serif 4"; src: url("/fonts/SourceSerif4opsz-wght.ttf") format("truetype"); font-weight: 200 900; font-display: swap; }
+@font-face { font-family: "Geist"; src: url("/fonts/Geistwght.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("/fonts/GeistMonowght.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/Interopsz-wght.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+
+:root {
+  /* Palette */
+  --ink: #1C140E;      /* text, headers, table heads */
+  --paper: #F4E6D0;    /* page background */
+  --card: #FFFFFF;     /* cards and tables */
+  --copper: #9E4E2A;   /* the only accent: Approve and Reject buttons */
+  --copper-hover: #87411F;
+  --stone: #524940;    /* secondary text and labels on light surfaces only */
+  --line: #E6D6BD;     /* card borders and row rules */
+  --line-strong: #BFAE95; /* outline pills and quiet buttons */
+  --soft: #FBF5EA;     /* table heads and card footers */
+
+  /* State tints: muted and desaturated, never neon */
+  --ok-ink: #3F5B3A;   --ok-bg: #E7EBE2;
+  --bad-ink: #7E3530;  --bad-bg: #F4E3E0;  --bad-line: #D9B5AF;
+  --wait-ink: var(--ink); --wait-bg: #F1E7D8;
+  --quiet-ink: var(--stone); --quiet-bg: #EFE7DE;
+
+  /* Type */
+  --font-display: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-ui: "Geist", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Shape */
+  --radius: 12px;
+  --radius-btn: 8px;
+}

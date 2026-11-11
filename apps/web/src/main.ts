@@ -38,6 +38,7 @@ async function load() {
   $("holds").innerHTML = holds.status === "fulfilled" ? renderHolds(holds.value) : "Unavailable.";
   $("payouts").innerHTML = payouts.status === "fulfilled" ? renderPayouts(payouts.value) : "Unavailable.";
   $("gifts").innerHTML = gifts.status === "fulfilled" ? renderGifts(gifts.value) : "Unavailable.";
+  $("updated").textContent = ` · updated ${new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
   const failed = results.find((r) => r.status === "rejected");
   if (failed) showError((failed as PromiseRejectedResult).reason);
 }

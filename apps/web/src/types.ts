@@ -113,7 +113,7 @@ export const BOUNDARY_LINES = [
 
 /** Shown under the cash-vs-ledger line, always. */
 export const RECON_NOTE =
-  "Fund credits are entered by the owner and are not checked on-chain against the tokens received; this cash-vs-ledger line is the check.";
+  "Fund credits are entered by the owner and are not checked against the tokens received on NEAR testnet; this cash-vs-ledger line is the check.";
 
 /** Label for every USD/USDC amount on the page and in the CSV. */
 export const BOOK_VALUE_LABEL = "book value at receipt";

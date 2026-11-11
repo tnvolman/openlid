@@ -157,7 +157,7 @@ describe("per-fund accounting", () => {
     const heads = [...html.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
     assert.deepEqual(heads, ["Fund", "Restriction", "Gifts", "Received", "Paid out", "Held", "Available"]);
     assert.ok(!html.includes(">Settled<"));
-    assert.match(html, /Treasury balance \(live, on-chain\): <strong>230\.00 USDC<\/strong>/);
+    assert.match(html, /<p class="kpi-label">Treasury balance<\/p><p class="kpi-num">230\.00 <span class="unit">USDC<\/span><\/p><p class="kpi-note">Live, NEAR testnet<\/p>/);
     // Only settled gifts count; building paid the 180 electric bill out of its 250; general's 90 hold is reserved.
     assert.deepEqual(cells(html, "general"), ["general", "without donor restrictions", "1", "100.00 USDC", "0.00 USDC", "90.00 USDC", "10.00 USDC"]);
     assert.deepEqual(cells(html, "missions"), ["missions", "with donor restrictions", "1", "60.00 USDC", "0.00 USDC", "0.00 USDC", "60.00 USDC"]);
@@ -194,12 +194,12 @@ describe("per-fund accounting", () => {
     const { payouts, holds } = fixtureState();
     const p = renderPayouts(payouts);
     assert.match(p, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th><th class="num">Amount<\/th><th>Memo<\/th><th>Requested<\/th><th>Paid<\/th><th>Payment ref<\/th>/);
-    assert.match(p, /<code>bill-electric-001<\/code><\/td><td>building<\/td>/);
+    assert.match(p, /<td class="bill"><span class="bill-name">Electric, October<\/span>.*?<code>bill-electric-001<\/code>(?:(?!<\/td>).)*<\/td><td>building<\/td>/);
     assert.match(p, /<td>2026-11-03 15:20 UTC<\/td><td>2026-11-03 15:20 UTC<\/td>/);
     assert.match(p, /<code title="demoTxElectric001PaidOnTestnet">/);
     const h = renderHolds(holds);
     assert.match(h, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th><th class="num">Amount<\/th><th>Memo<\/th><th>Requested<\/th><th>Request ref<\/th>/);
-    assert.match(h, /<code>bill-roof-002<\/code><\/td><td>general<\/td>/);
+    assert.match(h, /<td class="bill"><span class="bill-name">Roof repair deposit<\/span>.*?<code>bill-roof-002<\/code>(?:(?!<\/td>).)*<\/td><td>general<\/td>/);
     assert.match(h, /<td>2026-11-10 18:05 UTC<\/td>/);
     assert.match(h, /<code title="demoTxRoof002RequestOnTestnet">/);
     assert.equal(formatTime(null), "—");
@@ -239,8 +239,9 @@ describe("per-fund accounting", () => {
 describe("cash vs fund ledgers (B3)", () => {
   it("match: shows cash next to the ledger total with a match flag", () => {
     const html = renderSummary(summarize(fixtureState()));
-    assert.match(html, /Treasury balance \(live, on-chain\): <strong>230\.00 USDC<\/strong>/);
-    assert.match(html, /Sum of fund ledgers \(received − paid, on-chain\): <strong>230\.00 USDC<\/strong>/);
+    assert.match(html, /<p class="kpi-label">Treasury balance<\/p><p class="kpi-num">230\.00 <span class="unit">USDC<\/span><\/p><p class="kpi-note">Live, NEAR testnet<\/p>/);
+    assert.match(html, /<p class="kpi-label">Fund ledgers<\/p><p class="kpi-num">230\.00 <span class="unit">USDC<\/span><\/p><p class="recon recon-match" data-recon="match">Cash matches the fund ledgers\.<\/p><p class="kpi-note">Received − paid, NEAR testnet<\/p>/);
+    assert.ok(!/on-chain/i.test(html), "no 'on-chain' in visible labels");
     assert.match(html, /data-recon="match"/);
     assert.ok(!html.includes("Mismatch"));
   });
@@ -266,7 +267,7 @@ describe("cash vs fund ledgers (B3)", () => {
       assert.ok(html.includes(RECON_NOTE), status);
     }
     assert.match(renderSummary(base), /<p class="recon recon-match" data-recon="match">Cash matches the fund ledgers\.<\/p>/);
-    assert.match(RECON_NOTE, /not checked on-chain/);
+    assert.match(RECON_NOTE, /not checked against the tokens received on NEAR testnet/);
   });
 
   it("unknown cash is said plainly, not hidden", () => {
@@ -415,5 +416,50 @@ describe("config and page shell", () => {
     assert.ok(html.includes(">demo, not a tax document<"));
     assert.ok(html.includes('id="download-csv"'));
     assert.ok(html.replace(/\s+/g, " ").includes(TESTNET_NOTICE), "testnet / dry-run notice on page");
+  });
+});
+
+describe("premium restyle guards", () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+  it("fund table hides Received and Paid out on phones, never Held or Available", async () => {
+    const html = renderSummary(await createApi("", createMockFetch()).summary());
+    assert.match(html, /<th class="num hide-m">Received<\/th><th class="num hide-m">Paid out<\/th><th class="num">Held<\/th><th class="num">Available<\/th>/);
+    assert.match(html, /<td class="num hide-m">100\.00 USDC<\/td><td class="num hide-m">0\.00 USDC<\/td>\s*<td class="num">90\.00 USDC<\/td><td class="num">10\.00 USDC<\/td>/);
+    assert.match(read("./style.css"), /@media \(max-width: 700px\)[\s\S]*\.hide-m \{ display: none; \}/);
+  });
+
+  it("holds put Reject before Approve (stacked on phones) and the amount on the meta line", () => {
+    const h = renderHolds(fixtureState().holds);
+    assert.ok(h.indexOf('data-action="reject"') < h.indexOf('data-action="approve"'));
+    assert.match(h, /<code>bill-roof-002<\/code><span class="m-only"> · <span class="cap">general<\/span> · <span class="nowrap">90\.00 USDC<\/span><\/span>/);
+    assert.match(read("./style.css"), /\.holds \.acts \{ flex-direction: column;/);
+  });
+
+  it("copper is used only by the Approve and Reject buttons", () => {
+    const css = read("./style.css");
+    const uses = css.split("\n").filter((l) => l.includes("var(--copper"));
+    assert.ok(uses.length > 0);
+    for (const l of uses) assert.match(l, /^\.btn-(approve|reject)/, l);
+    assert.ok(!/#9E4E2A/i.test(css));
+  });
+
+  it("no visible 'on-chain' wording on the page or in rendered sections", async () => {
+    const st = fixtureState();
+    const s = await createApi("", createMockFetch()).summary();
+    const text = [read("../index.html"), renderSummary(s), renderPayouts(st.payouts), renderHolds(st.holds), renderGifts(st.gifts)].join(" ");
+    assert.ok(!/on-chain/i.test(text));
+  });
+
+  it("legal notices sit in a labelled disclosure and fonts ship with their OFL licenses", () => {
+    const html = read("../index.html").replace(/\s+/g, " ");
+    assert.match(html, /<details class="legal"> <summary>Full legal notices: what this demo is not \(6\)<\/summary> <ul class="boundaries" id="boundaries"/);
+    assert.ok(html.includes('<div class="wordmark">OpenLid</div>'));
+    for (const f of ["SourceSerif4opsz-wght.ttf", "Geistwght.ttf", "GeistMonowght.ttf", "Interopsz-wght.ttf", "source-serif-4-LICENSE.md", "geist-LICENSE.txt", "inter-LICENSE.txt"]) {
+      const body = readFileSync(new URL(`../public/fonts/${f}`, import.meta.url));
+      assert.ok(body.length > 0, f);
+      if (!f.endsWith(".ttf")) assert.match(body.toString(), /SIL Open Font License, Version 1\.1/, f);
+    }
+    assert.ok(!/fonts\.googleapis|fonts\.gstatic|cdn/i.test(read("./theme.css") + html));
   });
 });
