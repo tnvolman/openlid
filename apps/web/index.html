@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenLid treasurer (demo, not a tax document)</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>OpenLid treasurer</h1>
+      <p class="receipt-note" id="receipt-note">demo, not a tax document</p>
+      <p class="meta">
+        API: <code id="api-base"></code>
+        <span id="mode-badge" class="badge" hidden>mock data</span>
+      </p>
+      <div class="toolbar">
+        <button id="refresh" type="button">Refresh</button>
+        <button id="download-csv" type="button">Download CSV</button>
+      </div>
+      <p id="error" class="error" role="alert" hidden></p>
+    </header>
+    <main>
+      <section>
+        <h2>Summary</h2>
+        <div id="summary">Loading…</div>
+      </section>
+      <section>
+        <h2>Outstanding holds</h2>
+        <div id="holds">Loading…</div>
+      </section>
+      <section>
+        <h2>Payouts</h2>
+        <div id="payouts">Loading…</div>
+      </section>
+      <section>
+        <h2>Gifts by fund</h2>
+        <div id="gifts">Loading…</div>
+      </section>
+    </main>
+    <footer>OpenLid by Michael McClanahan (@tnvolman). Testnet / local only.</footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
