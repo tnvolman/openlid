@@ -62,20 +62,30 @@ Every bill names exactly one fund: `general`, `missions`, or `building`. Any oth
 
 - `received`: increased only by the owner's `credit_fund`, once per settled gift.
 - `paid`: increased by every successful payout from the fund (auto-pay or approved hold); decreased again if the `ft_transfer` fails and `on_payout_transfer` rolls the payout back (like `month_spent`).
-- `available = received - paid` (saturating, never negative).
-- `held`: sum of outstanding (`held`) holds on the fund. Shown in views but does **not** reduce `available`; instead `approve_hold` re-checks `available` at approval time.
+- `held`: sum of outstanding (`held`) holds on the fund. **Holds reserve their amount**: a new hold adds to `held`; `approve_hold` moves the amount from `held` to `paid`; `reject_hold` releases it; a rolled-back approval puts it back in `held` (the hold is `held` again).
+- `available = received - paid - held`: the **uncommitted** balance (saturating, never negative).
 
-A bill (auto-pay **or** hold creation) with `amount > available` for its fund panics with `insufficient fund balance: <fund> has <available> available, bill needs <amount>`. So does `approve_hold` when the fund no longer covers the hold (for example another payout used it after the hold was created). A missions gift can never pay a building bill.
+A bill (auto-pay **or** hold creation) with `amount > available` for its fund panics up front with `insufficient fund balance: <fund> has <available> available, bill needs <amount>`. Because holds reserve, a second hold (or a routine bill) that would commit the same money is refused immediately, not after a 20–30 s approval. `approve_hold` still re-checks (with the hold's own reservation set aside) as a guard, using the same message. A missions gift can never pay a building bill.
 
-The contract cannot see gifts (they live in the API store), and `credit_fund` does not move tokens: it only records that tokens the treasury already holds belong to a fund. All funds share one NEP-141 balance; the ledger is what keeps them apart. The token balance must therefore be credited first (testnet demo: test-FT `mint` into the treasury), then `credit_fund`. Tokens that reach the treasury without a `credit_fund` (for example a direct `ft_transfer`) belong to no fund and cannot be spent by a bill.
+#### Restriction class labels (current US GAAP wording)
+
+| Fund | Label |
+| --- | --- |
+| `general` | **without donor restrictions** |
+| `missions` | **with donor restrictions** |
+| `building` | **with donor restrictions** |
+
+These come from the contract (`fund_restriction`, `FundView.restriction`) and are repeated in the API (`FUND_RESTRICTION`), the summary, the CSV, and the treasurer page. They are labels only. **All three funds are siloed**: a bill is paid only from the fund it is tagged to. "Without donor restrictions" does **not** mean general can pay any bill; using general money for a missions or building purpose would be an explicit interfund transfer, which is not built (see follow-ups). OpenLid has no board-designated set-asides, and none is called "restricted".
+
+The contract cannot see gifts (they live in the API store), and `credit_fund` does not move tokens: it only records that tokens the treasury already holds belong to a fund. All funds share one NEP-141 balance; the ledger is what keeps them apart. The token balance must therefore be credited first (testnet demo: test-FT `mint` into the treasury), then `credit_fund`. Tokens that reach the treasury without a `credit_fund` (for example a direct `ft_transfer`, or a mint whose `credit_fund` failed) belong to no fund, cannot be spent by a bill, and show up as a cash-vs-ledger **mismatch** on the treasurer page (see `/api/summary` `reconciliation`).
 
 ### Change methods
 
 | Method | Caller | Args | Behavior |
 | --- | --- | --- | --- |
-| `request_payout` | `agent` only | `vendor: AccountId, amount: U128, bill_id: String, memo: String, fund: String` | `fund` must be `general`, `missions`, or `building`; `bill_id` must be unique and non-empty; `amount` > 0. If `vendor` is active on the allowlist, `amount <= per_bill_limit`, `month_spent + amount <= monthly_cap`, and `amount <= available(fund)`, transfer USDC to `vendor` immediately, add `amount` to the fund's `paid`, and record a payout with status `paid`. If `vendor` is active, `amount > per_bill_limit`, `month_spent + amount <= monthly_cap`, and `amount <= available(fund)`, create a hold (`status: "held"`) and do not transfer. Otherwise panic (invalid fund, unknown vendor, inactive vendor, cap exceeded, insufficient fund balance, duplicate `bill_id`). |
-| `approve_hold` | `owner` only | `bill_id: String` | Hold must be `held`. Re-check cap, that the vendor is still active on the allowlist, and that `amount <= available` for the hold's fund. Transfer USDC, add to the fund's `paid`, mark payout `paid`, mark hold `approved`. |
-| `reject_hold` | `owner` only | `bill_id: String` | Hold must be `held`. Mark hold `rejected`. No transfer. Does not consume cap. Does not change the fund ledger. |
+| `request_payout` | `agent` only | `vendor: AccountId, amount: U128, bill_id: String, memo: String, fund: String` | `fund` must be `general`, `missions`, or `building`; `bill_id` must be unique and non-empty; `amount` > 0. If `vendor` is active on the allowlist, `amount <= per_bill_limit`, `month_spent + amount <= monthly_cap`, and `amount <= available(fund)` (uncommitted), transfer USDC to `vendor` immediately, add `amount` to the fund's `paid`, and record a payout with status `paid`. If `vendor` is active, `amount > per_bill_limit`, `month_spent + amount <= monthly_cap`, and `amount <= available(fund)`, create a hold (`status: "held"`), add `amount` to the fund's `held` (reserved), and do not transfer. Otherwise panic (invalid fund, unknown vendor, inactive vendor, cap exceeded, insufficient fund balance, duplicate `bill_id`). |
+| `approve_hold` | `owner` only | `bill_id: String` | Hold must be `held`. Re-check cap, that the vendor is still active on the allowlist, and that the fund still covers the hold (its own reservation set aside). Move `amount` from the fund's `held` to `paid`, transfer USDC, mark payout `paid`, mark hold `approved`. |
+| `reject_hold` | `owner` only | `bill_id: String` | Hold must be `held`. Mark hold `rejected` and release its reservation (`held` down, `available` up). No transfer. Does not consume cap. `received` and `paid` are unchanged. |
 | `credit_fund` | `owner` only | `fund: String, amount: U128, gift_id: String` | Valid fund; `amount` > 0; `gift_id` non-empty and never credited before (`duplicate gift_id: gift already credited`, so a retried settlement cannot double-count). Adds `amount` to the fund's `received`. **Ledger only: moves no tokens.** The caller must already have credited the treasury's token balance. |
 | `propose_allowlist_change` | `owner` only | `vendor: AccountId, action: String` | `action` is `add` or `remove`. Stores a proposal with `execute_after = now + 24 hours` (86_400_000_000_000 ns). Replaces any pending proposal for the same vendor. |
 | `execute_allowlist_change` | any account | `vendor: AccountId` | Pending proposal must exist and `block_timestamp >= execute_after`. Then add or remove the vendor. Calling before the delay panics. |
@@ -103,7 +113,7 @@ AllowlistProposalView { vendor, action, execute_after }
 PayoutView { bill_id, vendor, amount, memo, fund, status }  // status: "paid"
 HoldView { bill_id, vendor, amount, memo, fund, status }     // held | approved | rejected
 MonthSpentView { year_month, spent, cap }                   // year_month like "2026-11"
-FundView { fund, received, paid, available, held }          // available = received - paid
+FundView { fund, restriction, received, paid, available, held }  // available = received - paid - held
 ```
 
 ### Events (NEP-297)
@@ -214,13 +224,13 @@ Gift `status` mapping (store OpenLid names, never guess a match by amount):
 
 ### Payouts and holds
 
-`POST /api/payouts/request` — agent path. Body: `{ "vendor": "...", "amount": "...", "billId": "...", "memo": "...", "fund": "general | missions | building" }`. `fund` is required; a missing or unknown fund is `400 { "error": "fund must be one of general, missions, building" }` before the contract is called. The API signs `request_payout` (with `fund`) using the function-call key from `OPENLID_AGENT_KEY_FILE`. Returns `{ "billId", "status": "paid" | "held", "vendor", "amount", "fund" }` or a 4xx with `{ "error": "..." }` when the contract rejects (`422`, e.g. `contract rejected: insufficient fund balance: building has 0 available, bill needs 50000000`).
+`POST /api/payouts/request` — agent path. Body: `{ "vendor": "...", "amount": "...", "billId": "...", "memo": "...", "fund": "general | missions | building" }`. `fund` is required; a missing or unknown fund is `400 { "error": "fund must be one of general, missions, building" }` before the contract is called. The API signs `request_payout` (with `fund`) using the function-call key from `OPENLID_AGENT_KEY_FILE`. Returns `{ "billId", "status": "paid" | "held", "vendor", "amount", "fund", "requestedAt", "txHash" }` or a 4xx with `{ "error": "..." }` when the contract rejects (`422`, e.g. `contract rejected: insufficient fund balance: building has 0 available, bill needs 50000000`).
 
-`GET /api/payouts` — `{ "payouts": PayoutView[] }` (each with `fund`)
+`GET /api/payouts` — `{ "payouts": PayoutRow[] }`: each the contract `PayoutView` (with `fund`) plus the API's audit trail: `requestedAt`, `paidAt` (ISO 8601 UTC), `paymentTxHash` (the tx that paid it: `request_payout` for auto-pay, `approve_hold` for an approved hold), `requestTxHash`. Unknown values are `null`.
 
-`GET /api/holds?status=held` — `{ "holds": HoldView[] }` (each with `fund`)
+`GET /api/holds?status=held` — `{ "holds": HoldRow[] }`: each the contract `HoldView` (with `fund`) plus `requestedAt`, `requestTxHash`, and, once approved, `paidAt` and `paymentTxHash`.
 
-`POST /api/holds/:billId/approve` and `POST /api/holds/:billId/reject` — treasurer path. In the demo these call the contract as `owner`. The owner key, if used at all, is a local file path in env, never committed. Returns `{ billId, status, hold }` (`hold` includes `fund`). An approve the fund can no longer cover is `422 { "error": "contract rejected: insufficient fund balance: ..." }` and the hold stays `held`. An approve whose `ft_transfer` is rolled back is `422` and is not recorded as paid.
+`POST /api/holds/:billId/approve` and `POST /api/holds/:billId/reject` — treasurer path. In the demo these call the contract as `owner`. The owner key, if used at all, is a local file path in env, never committed. Returns `{ billId, status, hold, txHash }` (`hold` is a `HoldRow`, with `fund`; `txHash` is the approve/reject tx). An approve the fund can no longer cover is `422 { "error": "contract rejected: insufficient fund balance: ..." }` and the hold stays `held`. An approve whose `ft_transfer` is rolled back is `422` and is not recorded as paid.
 
 ### Treasurer export and summary
 
@@ -229,34 +239,43 @@ Gift `status` mapping (store OpenLid names, never guess a match by amount):
 ```json
 {
   "giftsByFund": {
-    "general":  { "count": 1, "received": "100000000", "paidOut": "0", "held": "90000000", "available": "100000000" },
-    "missions": { "count": 1, "received": "60000000", "paidOut": "0", "held": "0", "available": "60000000" },
-    "building": { "count": 1, "received": "250000000", "paidOut": "180000000", "held": "0", "available": "70000000" }
+    "general":  { "restriction": "without donor restrictions", "count": 1, "received": "100000000", "paidOut": "0", "held": "90000000", "available": "10000000" },
+    "missions": { "restriction": "with donor restrictions", "count": 1, "received": "60000000", "paidOut": "0", "held": "0", "available": "60000000" },
+    "building": { "restriction": "with donor restrictions", "count": 1, "received": "250000000", "paidOut": "180000000", "held": "0", "available": "70000000" }
   },
   "treasuryBalance": "230000000",
+  "reconciliation": { "cash": "230000000", "ledgerTotal": "230000000", "ledgerSource": "chain", "difference": "0", "status": "match" },
   "payouts": { "paidCount": 1, "paidAmount": "180000000" },
   "holds": { "heldCount": 1, "heldAmount": "90000000" },
   "receiptNote": "demo, not a tax document"
 }
 ```
 
-Per fund: `count` settled gifts; `received` sum of settled gift amounts; `paidOut` sum of paid payouts from the fund; `held` sum of outstanding (`held`) holds on the fund; `available = received - paidOut` (holds do not reduce it, matching the contract). All amounts are atomic-unit decimal strings. `treasuryBalance` is the live NEP-141 balance of the treasury contract (`null` if unreadable). The old `settledAmount` field is gone; use `received`.
+Per fund: `restriction` class label; `count` settled gifts; `received` sum of settled gift amounts; `paidOut` sum of paid payouts from the fund; `held` sum of outstanding (`held`) holds on the fund (reserved); `available = received - paidOut - held`, the uncommitted balance, matching the contract. All amounts are atomic-unit decimal strings. `treasuryBalance` is the live NEP-141 balance of the treasury contract (`null` if unreadable). The old `settledAmount` field is gone; use `received`.
 
-`GET /api/export.csv` — CSV of gifts and payouts (two sections or a `type` column). Payout rows carry their `fund`. Include a header comment or first row note: `demo, not a tax document`.
+`reconciliation` is the cash-vs-ledger check (bank reconciliation applied to a chain treasury): `cash` = live `ft_balance_of(treasury)`; `ledgerTotal` = Σ over funds of (`received - paid`), which equals Σ (`available + held`); read from the contract's `get_fund_ledger` (`ledgerSource: "chain"`), or from the API's own records if that view is unavailable (`"api"`). `difference = cash - ledgerTotal`. `status` is `match`, `mismatch` (any non-zero difference: e.g. tokens minted without a fund credit, or tokens from an earlier run on the same account), or `unknown` (cash unreadable). The page shows a visible alert on `mismatch`; it never fails silently.
+
+`GET /api/export.csv` — a reconciliation export, not a tax file. Layout:
+
+1. Three comment lines: `# demo, not a tax document`, `# This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.`, `# This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.`
+2. Header `type,id,created_at,updated_at,paid_at,fund,restriction,donor,vendor,amount_in,origin_asset,amount_usdc,status,deposit_address,payment_ref,request_ref,memo`, then one row per gift (`type=gift`; `payment_ref` = settlement tx) and per bill (`type=payout`, any status including `held` and `rejected`; `payment_ref` = paying tx, `request_ref` = `request_payout` tx). `fund` and `restriction` are filled on **every** row.
+3. A blank line, `# per-fund reconciliation (USDC atomic units; available = received - paid - held)`, header `fund,restriction,gifts,received,paid,held,available`, one row per fund, then `# treasury cash (on-chain): …; fund ledgers total (received - paid, from chain|api): …; match|mismatch|unknown` (with the difference on a mismatch).
+
+Cells starting with `= + - @` are prefixed with `'`.
 
 ## Payout request flow
 
 0. A gift settles (`simulate-settlement`): tUSDC is minted into the treasury, then the owner calls `credit_fund(gift.fund, amount, gift.id)`, raising that fund's `received`.
 1. Treasurer or a bookkeeping helper submits a bill to `POST /api/payouts/request` with vendor, amount, unique `billId`, memo, and `fund`.
 2. The API validates `fund` and, using only the agent's restricted function-call key, calls `request_payout` on the treasury contract.
-3. The contract checks caller, fund name, allowlist, unique `bill_id`, per-bill limit, monthly cap, and that the bill fits the fund's `available`.
+3. The contract checks caller, fund name, allowlist, unique `bill_id`, per-bill limit, monthly cap, and that the bill fits the fund's uncommitted `available` (received − paid − held).
 4. If the vendor is allowlisted, amount is at or under the per-bill limit, the cap has room, and the fund covers it: USDC transfers to the vendor; the fund's `paid` grows; status `paid`. Demo must include one such bill.
-5. If the vendor is allowlisted, amount is above the per-bill limit, the cap has room, and the fund covers it: no transfer; a hold is created. The treasurer later calls `approve_hold` (which re-checks cap, allowlist, and fund) or `reject_hold` with the church owner key. Demo must include one such unusual bill, left held until approved.
+5. If the vendor is allowlisted, amount is above the per-bill limit, the cap has room, and the fund covers it: no transfer; a hold is created and its amount is reserved (`held`). The treasurer later calls `approve_hold` (which re-checks cap, allowlist, and fund, then converts held to paid) or `reject_hold` (which releases the reservation) with the church owner key. Demo must include one such unusual bill, left held until approved.
 6. Any other case is rejected on-chain. The agent cannot pay an unknown vendor, exceed the cap, skip the hold path, or pay a bill from another fund's money.
 
 ## Breaking change: per-fund ledger (contract state and ABI)
 
-The per-fund ledger changes the treasury's Borsh state (`Payout` and `Hold` gained `fund`; new `fund_ledger` and `credited_gifts` collections) and its ABI (`request_payout` requires `fund`; new `credit_fund`, `get_fund`, `get_fund_ledger`). There is no migration method. The existing testnet treasury `treasury.openlid-demo-mwbp9t7m.testnet` **cannot be upgraded in place**: new code would fail to deserialize its old state, and its fund ledgers would be empty anyway. Use a **fresh demo account and redeploy**. `scripts/testnet/setup.mjs` only deploys when its `state.json` says it has not, so point it at a new keys directory (a new faucet root account and fresh contracts, nothing reused):
+The per-fund ledger changes the treasury's Borsh state (`Payout` and `Hold` gained `fund`; new `fund_ledger` (`received`, `paid`, `held`) and `credited_gifts` collections) and its ABI (`request_payout` requires `fund`; new `credit_fund`, `get_fund`, `get_fund_ledger`). There is no migration method. The existing testnet treasury `treasury.openlid-demo-mwbp9t7m.testnet` **cannot be upgraded in place**: new code would fail to deserialize its old state, and its fund ledgers would be empty anyway. Use a **fresh demo account and redeploy**. `scripts/testnet/setup.mjs` only deploys when its `state.json` says it has not, so point it at a new keys directory (a new faucet root account and fresh contracts, nothing reused):
 
 ```bash
 # Documentation only. Not run as part of this change. Testnet, $0.
@@ -272,16 +291,47 @@ Alternatively, an in-place upgrade would need a `#[private] #[init(ignore_state)
 Treasurer page against the HTTP API:
 
 - Gifts grouped by fund, with status including `refunded` and `failed`
-- Per-fund summary (Fund, Gifts, Received, Paid out, Available) and the live on-chain treasury balance
-- Payouts and outstanding holds, each with its fund
+- Per-fund summary: Fund, Restriction (`with donor restrictions` / `without donor restrictions`), Gifts, Received, Paid out, Held, Available (uncommitted), with a note that each fund pays only its own bills
+- Live on-chain treasury balance next to the sum of fund ledgers, with a visible match / **mismatch** / unknown flag
+- Payouts (fund, requested, paid, payment ref) and outstanding holds (fund, requested, request ref), bill id always visible
 - Approve / reject hold actions
 - CSV download via `/api/export.csv`
 - Visible receipt label: `demo, not a tax document`
+- Four visible boundary lines (below), verbatim
+
+### Boundary lines (on the page; the first two also in the CSV header)
+
+1. This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.
+2. This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.
+3. In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.
+4. This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.
+
+### Does not cover / later (SHOULD follow-ups, not built)
+
+From the fund-accounting review (11 Nov 2026, §6.2). Listed so they are not rediscovered mid-demo:
+
+- **A8** Interfund transfers with an audit trail (the only way general money could be applied to a missions or building purpose).
+- **A9** No silent borrowing of restricted funds; any loan is an explicit receivable/payable with repayment and authority.
+- **A10** Show a release from restriction when a donor-restricted fund pays a qualifying bill.
+- **A11** Board-designated sub-funds inside "without donor restrictions", clearly not donor-restricted.
+- **B5** A book-to-chain reconciliation worksheet (monthly or on demand).
+- **B6** Monthly cap and month-to-date spent on the page (enforced on-chain today, not shown).
+- **C6** Required bill memo / purpose and invoice attachment.
+- **C7** A reason recorded when a hold is rejected.
+- **C8** Two-person or multisig approval above a threshold.
+- **C9** Roles: bookkeeper, treasurer, read-only.
+- **D6** Giving statements / Pub 1771 acknowledgments (only if done to the IRS standard).
+- **E3** A per-fund transaction register with a running balance.
+- **E4** Budget vs actuals per fund.
+- **E5** Reporting periods and a period close that does not rewrite history.
+- **E6** Refunds and reversals as new adjusting entries that also unwind the fund ledger.
+- **E7** A chart of accounts / expense categories under each fund.
 
 `scripts/demo.sh` runs on NEAR testnet only ($0, no mainnet, no paid APIs). It creates a testnet sub-account via the faucet or near-cli, writes keys only to `.demo-keys/` (gitignored, never printed), deploys or uses the test FT and treasury contracts, starts the API and UI, takes a dry-run quote (or stub), simulates settlement of at least one gift into the contract, and seeds one auto-paid allowlisted bill plus one held unusual bill. It must print a plain-language notice that the cross-chain leg is a dry-run quote plus a simulated settlement on testnet. If faucet or deploy cannot run on this machine, fail honestly and document it; do not fake a testnet receipt.
 
 ## Tests each tree must leave green
 
-- Contract: cap, per-bill limit, allowlist add/remove, 24h delay (too early fails, after delay succeeds), hold + treasurer approve, unauthorized caller rejected for `request_payout` and `approve_hold`; invalid fund rejected, insufficient fund refused for auto-pay and hold creation, `approve_hold` blocked when the fund no longer covers it, `credit_fund` owner-only with duplicate `gift_id` rejected, ledger math, fund in views, and `paid` restored on transfer rollback. Prefer `near-sdk` unit tests; `near-workspaces` sandbox is optional and must not be faked if it will not run.
-- App: dry-run quote persists a unique deposit address per gift (`sim:` when the quote has none); two gifts never share an address; mocked sync maps `SUCCESS` → `settled`, `REFUNDED` → `refunded`, `FAILED` → `failed`; matching is by deposit address only (a second gift with the same amount does not steal the first gift's status); `simulate-settlement` credits the test FT, calls `credit_fund` for the gift's fund, and marks `settled` (not if `credit_fund` fails), and is refused when the network is mainnet; payout `fund` required/validated, insufficient-fund and approve-blocked-by-fund are 4xx, and summary per-fund math holds.
+- Contract: cap, per-bill limit, allowlist add/remove, 24h delay (too early fails, after delay succeeds), hold + treasurer approve, unauthorized caller rejected for `request_payout` and `approve_hold`; invalid fund rejected, insufficient fund refused for auto-pay and hold creation, `approve_hold` blocked when the fund no longer covers it, `credit_fund` owner-only with duplicate `gift_id` rejected, holds reserve (`available = received - paid - held`; a second over-committing hold is refused immediately; reject frees; approve converts held to paid), restriction labels, ledger math, fund in views, and `paid` (and a hold's reservation) restored on transfer rollback. Prefer `near-sdk` unit tests; `near-workspaces` sandbox is optional and must not be faked if it will not run.
+- App: dry-run quote persists a unique deposit address per gift (`sim:` when the quote has none); two gifts never share an address; mocked sync maps `SUCCESS` → `settled`, `REFUNDED` → `refunded`, `FAILED` → `failed`; matching is by deposit address only (a second gift with the same amount does not steal the first gift's status); `simulate-settlement` credits the test FT, calls `credit_fund` for the gift's fund, and marks `settled` (not if `credit_fund` fails), and is refused when the network is mainnet; payout `fund` required/validated, insufficient-fund and approve-blocked-by-fund are 4xx, holds reserve in the summary, cash-vs-ledger `reconciliation` reports match and mismatch, payouts/holds carry dates and tx references, and the CSV has the disclaimers, fund on every row, and the reconciliation section.
+- UI: summary columns and restriction labels (no wording that general can pay any bill), uncommitted Available, cash-vs-ledger match/mismatch flag, the four boundary lines on the page (and D2/D3 in the CSV), fund/date/reference columns on payouts and holds.
 - UI / README: setup, architecture, known-issues, the testnet-only / dry-run plus simulated settlement wording, the Apache-2.0 license line, and a short POTLOCK comparison written from POTLOCK's public docs (open public-goods / quadratic-funding pots vs OpenLid's church treasury with on-contract vendor policy). No invented POTLOCK claims.

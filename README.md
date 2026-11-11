@@ -20,7 +20,8 @@ Church stablecoin giving on NEAR. Hackathon build by Michael McClanahan (@tnvolm
   - a per-bill limit
   - a monthly cap
   - a 24-hour timelock on allowlist changes
-  - per-fund balances: every bill names a fund (`general`, `missions`, or `building`) and is paid only if that fund's `available = received - paid` covers it. A missions gift cannot pay a building bill.
+  - per-fund balances: every bill names a fund (`general`, `missions`, or `building`) and is paid only if that fund's uncommitted `available = received - paid - held` covers it. Outstanding holds reserve their amount, so two holds cannot commit the same money. A missions gift cannot pay a building bill.
+- **Fund labels.** In current US GAAP wording, `missions` and `building` are **with donor restrictions** and `general` is **without donor restrictions**. That is a label, not a permission: all three funds are siloed, and `general` cannot pay a missions or building bill. Doing that on purpose would be an interfund transfer, which is not built (see [Does not cover](#does-not-cover-yet)). There are no board-designated set-asides, and nothing is called "restricted" that the donor did not restrict.
 - **Agent.** The agent has only a restricted function-call access key, and that key can call only `request_payout`. It cannot pay an unknown vendor, go over the cap, skip a hold, or spend one fund's gifts on another fund's bill.
 - **Holds.** A bill to an allowlisted vendor that is over the per-bill limit is held for the church treasurer. In real use the treasurer is a hardware wallet or a multisig. The treasurer approves or rejects the bill.
 
@@ -98,18 +99,19 @@ donor ──► POST /api/gifts/quote {donor, fund, originAsset, amount, refundT
 5. If the vendor is allowlisted, the amount is over the per-bill limit, the cap has room, and the fund covers it, nothing is sent and a hold is created. The treasurer later calls `approve_hold` or `reject_hold` with the owner key (`POST /api/holds/:billId/approve|reject` in the demo). Approval checks the cap, the allowlist, and the fund balance again, since another bill may have used the fund in the meantime.
 6. Anything else is rejected on-chain, for example `insufficient fund balance: building has 0 available, bill needs 50000000`. The API returns it as `422 { "error": ... }` and the page shows it in USDC.
 
-Outstanding holds are shown per fund but do not reduce `available`; the re-check at approval is what keeps a fund from being overspent.
+A hold reserves its amount from the moment it is created: `available` drops, a second hold or routine bill that would need the same money is refused straight away, approval moves the amount from held to paid, and rejection releases it.
 
 Allowlist changes go through `propose_allowlist_change`, which only the owner can call. They take effect only when `execute_allowlist_change` is called at least 24 hours later.
 
 ### Treasurer page (`apps/web`)
 
 - The notice: NEAR testnet only, dry-run quote plus simulated settlement.
-- Summary, from `GET /api/summary`: the live on-chain treasury balance, then a table per fund with **Gifts** (settled count), **Received**, **Paid out**, and **Available** (received minus paid out).
-- Outstanding holds, from `GET /api/holds?status=held`, with their **Fund** and **Approve** / **Reject** buttons.
-- Payouts, from `GET /api/payouts`, with their **Fund**.
+- Four boundary lines, always visible: not an IRS Publication 1771 acknowledgment or giving statement; not GAAP financial statements or an audit, review, or compilation (testnet only, no real funds); approve/reject is unauthenticated in this demo and the server signs as owner; the demo covers fund-tagged gifts and bills, not interfund transfers, budgets, pledges, or tax receipts.
+- Summary, from `GET /api/summary`: the live on-chain treasury balance next to the **sum of fund ledgers** (received − paid), with a visible **match / mismatch** flag; then a table per fund with **Restriction**, **Gifts** (settled count), **Received**, **Paid out**, **Held**, and **Available** (uncommitted: received − paid out − held).
+- Outstanding holds, from `GET /api/holds?status=held`, with **Fund**, **Requested** time, the request tx reference, and **Approve** / **Reject** buttons.
+- Payouts, from `GET /api/payouts`, with **Fund**, **Requested** and **Paid** times, and the **Payment ref** (tx hash).
 - Gifts grouped by fund, from `GET /api/gifts`. Every status is shown, including `refunded` and `failed`. Simulated `sim:` deposit addresses are tagged **simulated**.
-- A **Download CSV** button that opens `GET /api/export.csv`.
+- A **Download CSV** button that opens `GET /api/export.csv`: a reconciliation export with the receipt, Pub 1771, and not-GAAP lines at the top, `fund` and restriction on every gift and bill row, dates and tx references, and a per-fund reconciliation section (received, paid, held, available) plus the cash-vs-ledgers line.
 - The visible label **demo, not a tax document**.
 
 The API base is `http://127.0.0.1:8787` by default. To change it:
@@ -173,7 +175,8 @@ The web tests use the in-memory fixture. They check:
 - grouping by fund, with refunded and failed gifts kept
 - that fixture gifts are dry-run quotes with unique `sim:` addresses, tagged **simulated** on the page
 - that approve and reject call `POST /api/holds/:billId/approve|reject`
-- the per-fund summary table (Gifts, Received, Paid out, Available), the Fund column on payouts and holds, and a clear message when a fund cannot cover an approval
+- the per-fund summary table (Restriction, Gifts, Received, Paid out, Held, Available), restriction wording that never says general can pay any bill, the cash-vs-ledger match and mismatch flag, fund / date / reference columns on payouts and holds, and a clear message when a fund cannot cover an approval
+- the four boundary lines on the page, and the Pub 1771 / not-GAAP lines in the CSV header
 - that the CSV button points at `/api/export.csv`
 - that the receipt label and the testnet notice appear on the page
 
@@ -185,6 +188,7 @@ The web tests use the in-memory fixture. They check:
 - **24-hour allowlist timelock.** Later allowlist add or remove still waits 24 hours. A fresh deploy may pass an `initial_allowlist` to `new`; those vendors are active immediately, as deploy-time configuration rather than a later change. The demo uses that so the first run can pay and hold bills on the same day.
 - **Test-FT init.** The test FT is initialized with `new({ owner })`, matching `contracts/test-ft`. Override with `DEMO_FT_INIT_METHOD` and `DEMO_FT_INIT_ARGS` only if you swap the token. If the token has no `storage_deposit`, that step is skipped with a note.
 - **Per-fund ledger is a breaking contract change.** The treasury's stored state and its `request_payout` arguments changed, and there is no migration. The existing testnet treasury `treasury.openlid-demo-mwbp9t7m.testnet` cannot be upgraded in place; run the demo against a fresh account (for example `OPENLID_DEMO_KEYS_DIR=.demo-keys/fund-ledger scripts/demo.sh --once` after rebuilding both wasm files). See INTERFACES.md, "Breaking change: per-fund ledger". Not redeployed as part of this change.
+- **Cash vs fund ledgers.** If the treasury's live token balance differs from the sum of fund ledgers (for example, tokens left over from an earlier demo run on the same account, or a mint whose `credit_fund` failed), the page shows a red **Mismatch** line with the difference. Use a fresh demo account to start matched.
 - **Only simulated settlement credits funds on-chain.** A gift that settles through a real 1Click `SUCCESS` (`/api/gifts/:id/sync`, not used in the demo) shows in the summary, but its fund is not credited on-chain until the owner calls `credit_fund`.
 - **The faucet may limit requests.** The testnet faucet can rate-limit or change its endpoint. Override the endpoint with `NEAR_TESTNET_FAUCET`. The created account is reused through `.demo-keys/state.json`.
 - **Assumed API test script.** The `npm test` command for the API assumes the API package defines a `test` script.
@@ -192,6 +196,18 @@ The web tests use the in-memory fixture. They check:
 - **CORS.** The page calls the API cross-origin, from `:5173` to `:8787`. If the API does not send CORS headers, use `?api=same-origin`, which goes through the Vite proxy.
 - **CSV download.** The download goes to the API's URL. Whether the browser saves the file or shows it depends on the API's `Content-Disposition` header.
 - **No authentication on the treasurer page.** In the demo, the API holds the owner key path. In real use, approve and reject would be signed by the treasurer's hardware wallet or multisig, not by the server.
+
+## Does not cover (yet)
+
+Not built; follow-ups from the fund-accounting review. The page's boundary lines say the same in short.
+
+- Interfund transfers (A8), and explicit loans instead of silent borrowing from restricted funds (A9)
+- Showing a release from restriction when a restricted fund pays a bill (A10)
+- Board-designated sub-funds (A11)
+- A reconciliation worksheet (B5) and the monthly cap / month-to-date spent on the page (B6)
+- Required memo / invoice (C6), a reject reason (C7), two-person approval (C8), roles (C9)
+- Giving statements / Pub 1771 acknowledgments (D6)
+- A per-fund register with running balance (E3), budgets (E4), period close (E5), refunds as adjusting entries (E6), a chart of accounts (E7)
 
 ## How OpenLid differs from POTLOCK
 
@@ -208,7 +224,7 @@ This comparison uses only POTLOCK's public docs at <https://docs.potlock.io>.
 
 - Gifts are designated to the church's own funds (`general`, `missions`, `building`).
 - Gifts settle to an account the church owns. In this demo, that settlement is a simulated tUSDC mint on testnet.
-- Money goes out only as vendor payouts. The contract enforces the vendor allowlist (with a 24-hour timelock on changes), a per-bill limit, and a monthly cap. Unusual bills are held for the treasurer.
+- Money goes out only as vendor payouts, each from the fund its bill is tagged to. The contract enforces the vendor allowlist (with a 24-hour timelock on changes), a per-bill limit, a monthly cap, and per-fund balances. Unusual bills are held for the treasurer.
 - There is no matching pool and no quadratic funding.
 
 ## License
