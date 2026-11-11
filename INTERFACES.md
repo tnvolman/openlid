@@ -257,9 +257,9 @@ Per fund: `restriction` class label; `count` settled gifts; `received` sum of se
 
 `GET /api/export.csv` — a reconciliation export, not a tax file. Layout:
 
-1. Three comment lines: `# demo, not a tax document`, `# This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.`, `# This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.`
-2. Header `type,id,created_at,updated_at,paid_at,fund,restriction,donor,vendor,amount_in,origin_asset,amount_usdc,status,deposit_address,payment_ref,request_ref,memo`, then one row per gift (`type=gift`; `payment_ref` = settlement tx) and per bill (`type=payout`, any status including `held` and `rejected`; `payment_ref` = paying tx, `request_ref` = `request_payout` tx). `fund` and `restriction` are filled on **every** row.
-3. A blank line, `# per-fund reconciliation (USDC atomic units; available = received - paid - held)`, header `fund,restriction,gifts,received,paid,held,available`, one row per fund, then `# treasury cash (on-chain): …; fund ledgers total (received - paid, from chain|api): …; match|mismatch|unknown` (with the difference on a mismatch).
+1. Five comment lines: `# demo, not a tax document`, then boundary lines 1, 2, 5 and 6 below (Pub 1771; not GAAP / audit; noncash property and book value at receipt, not a deductible value; no custody and legal review before real money).
+2. Header `type,id,created_at,updated_at,paid_at,fund,restriction,donor,vendor,amount_in,origin_asset,amount_usdc_book_value_at_receipt,status,deposit_address,payment_ref,request_ref,memo`, then one row per gift (`type=gift`; `payment_ref` = settlement tx) and per bill (`type=payout`, any status including `held` and `rejected`; `payment_ref` = paying tx, `request_ref` = `request_payout` tx). `fund` and `restriction` are filled on **every** row.
+3. A blank line, `# per-fund reconciliation (USDC atomic units, book value at receipt; available = received - paid - held)`, header `fund,restriction,gifts,received,paid,held,available`, one row per fund, then `# treasury cash (on-chain): …; fund ledgers total (received - paid, from chain|api): …; match|mismatch|unknown` (with the difference on a mismatch).
 
 Cells starting with `= + - @` are prefixed with `'`.
 
@@ -297,14 +297,24 @@ Treasurer page against the HTTP API:
 - Approve / reject hold actions
 - CSV download via `/api/export.csv`
 - Visible receipt label: `demo, not a tax document`
-- Four visible boundary lines (below), verbatim
+- Six visible boundary lines (below), verbatim, and a "book value at receipt, not a deductible value" caption on every amount table
 
-### Boundary lines (on the page; the first two also in the CSV header)
+### Boundary lines (on the page; 1, 2, 5 and 6 also in the CSV header)
 
 1. This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.
 2. This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.
 3. In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.
 4. This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.
+5. Gifts of USDC or other digital assets are noncash property, not cash. Amounts shown are book value at receipt (church books only, as of the date and time received), not a deductible value. This is not a noncash acknowledgment and does not state fair market value; Forms 8283 and 8282 and any appraisal are out of scope and are the donor's or church's later tax job if they apply. A CPA must confirm current rules.
+6. OpenLid never holds or moves donor funds for someone else: gifts go to a treasury the church controls. A legal review is required before any real money. This demo is testnet only; no real funds.
+
+### Noncash property and book value at receipt (D9)
+
+USDC, tUSDC, and any other digital-asset gift is **noncash property**, not cash (the IRS treats virtual currency as property). Every USD/USDC figure OpenLid shows is **book value at receipt**: the church's books only, as of the date and time the gift was received. It is never presented as a deductible value. On the page every amount table carries the caption "USDC amounts are book value at receipt (church books only), not a deductible value."; in the CSV the amount column is `amount_usdc_book_value_at_receipt` and the reconciliation section says the same. OpenLid does not produce noncash acknowledgments, does not state fair market value, and does not handle Form 8283, Form 8282, or qualified appraisals; if they ever apply they are the donor's or the church's later tax job. A CPA must confirm current rules.
+
+### Custody and legal review (D10)
+
+OpenLid never holds or moves donor funds for someone else. Gifts settle to a treasury contract the church controls (the owner is the church's account); OpenLid has no account that holds donor money. The intended production path uses a **per-gift 1Click deposit address** that receives the donor's asset before 1Click settles to the church treasury. That address path, and the setup as a whole, needs a **legal review before mainnet or any real funds** (custody / money-transmission questions). This demo runs on testnet only with dry-run quotes and simulated settlement, so no deposit address ever receives anything; no new flow is implemented here.
 
 ### Does not cover / later (SHOULD follow-ups, not built)
 
@@ -333,5 +343,5 @@ From the fund-accounting review (11 Nov 2026, §6.2). Listed so they are not red
 
 - Contract: cap, per-bill limit, allowlist add/remove, 24h delay (too early fails, after delay succeeds), hold + treasurer approve, unauthorized caller rejected for `request_payout` and `approve_hold`; invalid fund rejected, insufficient fund refused for auto-pay and hold creation, `approve_hold` blocked when the fund no longer covers it, `credit_fund` owner-only with duplicate `gift_id` rejected, holds reserve (`available = received - paid - held`; a second over-committing hold is refused immediately; reject frees; approve converts held to paid), restriction labels, ledger math, fund in views, and `paid` (and a hold's reservation) restored on transfer rollback. Prefer `near-sdk` unit tests; `near-workspaces` sandbox is optional and must not be faked if it will not run.
 - App: dry-run quote persists a unique deposit address per gift (`sim:` when the quote has none); two gifts never share an address; mocked sync maps `SUCCESS` → `settled`, `REFUNDED` → `refunded`, `FAILED` → `failed`; matching is by deposit address only (a second gift with the same amount does not steal the first gift's status); `simulate-settlement` credits the test FT, calls `credit_fund` for the gift's fund, and marks `settled` (not if `credit_fund` fails), and is refused when the network is mainnet; payout `fund` required/validated, insufficient-fund and approve-blocked-by-fund are 4xx, holds reserve in the summary, cash-vs-ledger `reconciliation` reports match and mismatch, payouts/holds carry dates and tx references, and the CSV has the disclaimers, fund on every row, and the reconciliation section.
-- UI: summary columns and restriction labels (no wording that general can pay any bill), uncommitted Available, cash-vs-ledger match/mismatch flag, the four boundary lines on the page (and D2/D3 in the CSV), fund/date/reference columns on payouts and holds.
+- UI: boundary lines 5 and 6 (noncash property / book value at receipt / not a deductible value; no custody / church-controlled treasury / legal review before real money) on the page and in the CSV, a book-value caption on every amount table, and no wording that calls an amount a tax deduction; summary columns and restriction labels (no wording that general can pay any bill), uncommitted Available, cash-vs-ledger match/mismatch flag, all six boundary lines on the page (and 1, 2, 5, 6 in the CSV), fund/date/reference columns on payouts and holds.
 - UI / README: setup, architecture, known-issues, the testnet-only / dry-run plus simulated settlement wording, the Apache-2.0 license line, and a short POTLOCK comparison written from POTLOCK's public docs (open public-goods / quadratic-funding pots vs OpenLid's church treasury with on-contract vendor policy). No invented POTLOCK claims.
