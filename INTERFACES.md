@@ -22,7 +22,9 @@ Do not edit a path you do not own. Do not push, open PRs, merge, deploy, or add 
 - `vendor`: allowlisted NEAR account that can receive payouts.
 - `usdc_token`: NEP-141 token account id. On the testnet demo this is a simple test FT (not mainnet USDC). Settlement destination is the treasury contract on the church's testnet account.
 
-Environment variable **names only** (see `.env.example`): `OPENLID_NETWORK`, `OPENLID_CONTRACT_ID`, `OPENLID_OWNER_ACCOUNT_ID`, `OPENLID_AGENT_ACCOUNT_ID`, `OPENLID_AGENT_KEY_FILE`, `OPENLID_OWNER_KEY_FILE`, `OPENLID_USDC_TOKEN_ID`, `OPENLID_DEMO_KEYS_DIR`, `ONECLICK_BASE_URL`, `ONECLICK_API_KEY`, `ONECLICK_DRY_RUN`, `OPENLID_DATA_DIR`. Values and key files stay off-repo.
+Environment variable **names only** (see `.env.example`): `OPENLID_NETWORK`, `OPENLID_CONTRACT_ID`, `OPENLID_OWNER_ACCOUNT_ID`, `OPENLID_AGENT_ACCOUNT_ID`, `OPENLID_AGENT_KEY_FILE`, `OPENLID_OWNER_KEY_FILE`, `OPENLID_USDC_TOKEN_ID`, `OPENLID_DEMO_KEYS_DIR`, `ONECLICK_BASE_URL`, `ONECLICK_API_KEY`, `ONECLICK_DRY_RUN`, `OPENLID_DATA_DIR`, `OPENLID_NEAR_RPC_URL`. Values and key files stay off-repo.
+
+`OPENLID_NEAR_RPC_URL` is the NEAR JSON-RPC the API uses for views and signing. Unset, testnet uses `https://rpc.testnet.fastnear.com`: the official `https://rpc.testnet.near.org` is deprecated and returns HTTP 429, which made `/api/summary` fail. There is no mainnet default.
 
 
 ## Testnet demo (required)

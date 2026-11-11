@@ -29,6 +29,7 @@ CORS allows `http://127.0.0.1:5173` and `http://localhost:5173` (the Vite UI).
 | Name | Used for |
 | --- | --- |
 | `OPENLID_NETWORK` | `testnet` (default). `mainnet` is refused at startup. `simulate-settlement` only runs on `testnet`. |
+| `OPENLID_NEAR_RPC_URL` | NEAR JSON-RPC used for all contract views, signing, and the treasury balance. Default for `testnet`: `https://rpc.testnet.fastnear.com`. The official `https://rpc.testnet.near.org` is deprecated and currently answers HTTP 429, so it is not the default; set this to use another provider. Empty means unset. Only the host is logged. |
 | `OPENLID_CONTRACT_ID` | Treasury contract. Also the 1Click `recipient`. |
 | `OPENLID_USDC_TOKEN_ID` | Testnet test FT (tUSDC) account. 1Click `destinationAsset` is `nep141:<this>`; simulated settlement mints this token. |
 | `OPENLID_AGENT_ACCOUNT_ID` | Account that owns the agent's function-call key. |
