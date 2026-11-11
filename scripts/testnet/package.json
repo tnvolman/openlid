@@ -1,0 +1,13 @@
+{
+  "name": "@openlid/testnet-demo",
+  "private": true,
+  "type": "module",
+  "description": "NEAR testnet-only helpers for scripts/demo.sh ($0, no mainnet)",
+  "author": "Michael McClanahan (@tnvolman)",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "near-api-js": "^7.5.1"
+  }
+}
