@@ -5,9 +5,9 @@ import { createApi } from "./api.ts";
 import { DEFAULT_API_BASE, isMockMode, resolveApiBase } from "./config.ts";
 import { CSV_FILENAME, triggerCsvDownload } from "./csv.ts";
 import { createMockFetch, fixtureState, summarize } from "./fixtures.ts";
-import { formatUsdc, friendlyError, groupGiftsByFund } from "./format.ts";
-import { renderGifts, renderHolds, renderPayouts, renderSummary } from "./render.ts";
-import { RECEIPT_NOTE, TESTNET_NOTICE } from "./types.ts";
+import { formatTime, formatUsdc, friendlyError, groupGiftsByFund } from "./format.ts";
+import { renderGifts, renderHolds, renderPayouts, renderReconciliation, renderSummary } from "./render.ts";
+import { BOUNDARY_LINES, FUND_RESTRICTION, FUND_SILO_NOTE, RECEIPT_NOTE, TESTNET_NOTICE } from "./types.ts";
 
 describe("formatUsdc", () => {
   it("formats 6-decimal atomic strings", () => {
@@ -124,7 +124,15 @@ describe("API client targets INTERFACES.md routes", () => {
   it("summary from the fixture matches the contract shape", async () => {
     const s = await createApi("", createMockFetch()).summary();
     assert.equal(s.receiptNote, RECEIPT_NOTE);
-    assert.deepEqual(s.giftsByFund.general, { count: 1, received: "100000000", paidOut: "0", held: "90000000", available: "100000000" });
+    assert.deepEqual(s.giftsByFund.general, {
+      restriction: "without donor restrictions",
+      count: 1,
+      received: "100000000",
+      paidOut: "0",
+      held: "90000000",
+      available: "10000000",
+    });
+    assert.equal(s.reconciliation?.status, "match");
     assert.equal(s.holds.heldCount, 1);
     assert.match(renderSummary(s), /90\.00 USDC/);
   });
@@ -134,39 +142,71 @@ describe("per-fund accounting", () => {
   const cells = (html: string, fund: string) =>
     [...html.match(new RegExp(`<tr data-fund="${fund}">([\\s\\S]*?)</tr>`))![1].matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((m) => m[1]);
 
-  it("summary table has Fund / Gifts / Received / Paid out / Available and the live balance line", async () => {
+  it("summary table: Fund / Restriction / Gifts / Received / Paid out / Held / Available, plus the live balance line", async () => {
     const s = await createApi("", createMockFetch()).summary();
-    const html = renderSummary({ ...s, treasuryBalance: "230000000" });
+    const html = renderSummary(s);
     const heads = [...html.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
-    assert.deepEqual(heads, ["Fund", "Gifts", "Received", "Paid out", "Available"]);
+    assert.deepEqual(heads, ["Fund", "Restriction", "Gifts", "Received", "Paid out", "Held", "Available"]);
     assert.ok(!html.includes(">Settled<"));
     assert.match(html, /Treasury balance \(live, on-chain\): <strong>230\.00 USDC<\/strong>/);
-    // Only settled gifts count; building paid the 180 USDC electric bill out of its 250 USDC.
-    assert.deepEqual(cells(html, "general"), ["general", "1", "100.00 USDC", "0.00 USDC", "100.00 USDC"]);
-    assert.deepEqual(cells(html, "missions"), ["missions", "1", "60.00 USDC", "0.00 USDC", "60.00 USDC"]);
-    assert.deepEqual(cells(html, "building"), ["building", "1", "250.00 USDC", "180.00 USDC", "70.00 USDC"]);
+    // Only settled gifts count; building paid the 180 electric bill out of its 250; general's 90 hold is reserved.
+    assert.deepEqual(cells(html, "general"), ["general", "without donor restrictions", "1", "100.00 USDC", "0.00 USDC", "90.00 USDC", "10.00 USDC"]);
+    assert.deepEqual(cells(html, "missions"), ["missions", "with donor restrictions", "1", "60.00 USDC", "0.00 USDC", "0.00 USDC", "60.00 USDC"]);
+    assert.deepEqual(cells(html, "building"), ["building", "with donor restrictions", "1", "250.00 USDC", "180.00 USDC", "0.00 USDC", "70.00 USDC"]);
   });
 
-  it("fixture bills each fit their fund", () => {
+  it("restriction labels use GAAP wording and never imply general can pay any bill (A6/A7)", async () => {
+    assert.deepEqual(FUND_RESTRICTION, {
+      general: "without donor restrictions",
+      missions: "with donor restrictions",
+      building: "with donor restrictions",
+    });
+    const html = renderSummary(await createApi("", createMockFetch()).summary());
+    assert.ok(html.includes(FUND_SILO_NOTE));
+    assert.match(FUND_SILO_NOTE, /still cannot pay a missions or building bill/);
+    assert.match(FUND_SILO_NOTE, /interfund transfer/);
+    // No looser wording: no bare "restricted"/"unrestricted" and no "any bill".
+    const text = html.replace(/with(out)? donor restrictions/g, "");
+    assert.ok(!/\bunrestricted\b|\brestricted\b|any bill/i.test(text), text);
+  });
+
+  it("fixture bills each fit their fund; available = received - paid out - held", () => {
     const st = fixtureState();
     const s = summarize(st);
     for (const f of ["general", "missions", "building"] as const) {
       const row = s.giftsByFund[f];
-      assert.equal(BigInt(row.available), BigInt(row.received) - BigInt(row.paidOut));
+      assert.equal(BigInt(row.available), BigInt(row.received) - BigInt(row.paidOut) - BigInt(row.held));
       assert.ok(BigInt(row.available) >= 0n, f);
-      assert.ok(BigInt(row.held) <= BigInt(row.available), `${f} holds are approvable`);
     }
     assert.equal(st.payouts[0].fund, "building");
   });
 
-  it("payouts and holds tables show the Fund column", () => {
+  it("payouts and holds tables show fund, dates, and payment / request references (C4)", () => {
     const { payouts, holds } = fixtureState();
     const p = renderPayouts(payouts);
-    assert.match(p, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th>/);
+    assert.match(p, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th><th class="num">Amount<\/th><th>Memo<\/th><th>Requested<\/th><th>Paid<\/th><th>Payment ref<\/th>/);
     assert.match(p, /<code>bill-electric-001<\/code><\/td><td>building<\/td>/);
+    assert.match(p, /<td>2026-11-03 15:20 UTC<\/td><td>2026-11-03 15:20 UTC<\/td>/);
+    assert.match(p, /<code title="demoTxElectric001PaidOnTestnet">/);
     const h = renderHolds(holds);
-    assert.match(h, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th>/);
+    assert.match(h, /<th>Bill<\/th><th>Fund<\/th><th>Vendor<\/th><th class="num">Amount<\/th><th>Memo<\/th><th>Requested<\/th><th>Request ref<\/th>/);
     assert.match(h, /<code>bill-roof-002<\/code><\/td><td>general<\/td>/);
+    assert.match(h, /<td>2026-11-10 18:05 UTC<\/td>/);
+    assert.match(h, /<code title="demoTxRoof002RequestOnTestnet">/);
+    assert.equal(formatTime(null), "—");
+    assert.match(renderPayouts([{ ...payouts[0], paidAt: null, paymentTxHash: null }]), /<td>—<\/td><td>—<\/td>/);
+  });
+
+  it("approving a hold records its paid time and payment reference", async () => {
+    const f = createMockFetch();
+    const api = createApi("", f);
+    await api.approveHold("bill-roof-002");
+    const paid = (await api.payouts()).find((p) => p.bill_id === "bill-roof-002")!;
+    assert.equal(paid.fund, "general");
+    assert.ok(paid.paidAt);
+    assert.equal(paid.paymentTxHash, "demoTxApprove-bill-roof-002");
+    const s = await api.summary();
+    assert.deepEqual([s.giftsByFund.general.paidOut, s.giftsByFund.general.held, s.giftsByFund.general.available], ["90000000", "0", "10000000"]);
   });
 
   it("approve blocked by the fund surfaces a clear error and leaves the hold held", async () => {
@@ -184,6 +224,60 @@ describe("per-fund accounting", () => {
     assert.equal(f.state.holds[0].status, "held");
     assert.equal((await api.payouts()).length, 1);
     assert.equal(friendlyError("contract rejected: monthly cap exceeded"), "contract rejected: monthly cap exceeded");
+  });
+});
+
+describe("cash vs fund ledgers (B3)", () => {
+  it("match: shows cash next to the ledger total with a match flag", () => {
+    const html = renderSummary(summarize(fixtureState()));
+    assert.match(html, /Treasury balance \(live, on-chain\): <strong>230\.00 USDC<\/strong>/);
+    assert.match(html, /Sum of fund ledgers \(received − paid, on-chain\): <strong>230\.00 USDC<\/strong>/);
+    assert.match(html, /data-recon="match"/);
+    assert.ok(!html.includes("Mismatch"));
+  });
+
+  it("mismatch: a visible alert with the difference", () => {
+    const html = renderSummary(summarize(fixtureState(), "239950000"));
+    assert.match(html, /data-recon="mismatch" role="alert"><strong>Mismatch:<\/strong> treasury cash differs from the fund ledgers by 9\.95 USDC/);
+    const short = renderSummary(summarize(fixtureState(), "200000000"));
+    assert.match(short, /differs from the fund ledgers by -30\.00 USDC/);
+  });
+
+  it("unknown cash is said plainly, not hidden", () => {
+    const s = summarize(fixtureState());
+    const html = renderReconciliation({
+      ...s,
+      treasuryBalance: null,
+      reconciliation: { ...s.reconciliation!, cash: null, difference: null, status: "unknown" },
+    });
+    assert.ok(!html.includes("Treasury balance"));
+    assert.match(html, /data-recon="unknown">Cash could not be read/);
+  });
+});
+
+describe("boundary lines (C3 / D2 / D3 / D4)", () => {
+  it("the page shows all four, verbatim, plus the receipt and testnet notices", () => {
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\s+/g, " ");
+    assert.equal(BOUNDARY_LINES.length, 4);
+    for (const line of BOUNDARY_LINES) assert.ok(html.includes(`<li>${line}</li>`), line);
+    assert.match(BOUNDARY_LINES[0], /IRS Publication 1771/);
+    assert.match(BOUNDARY_LINES[1], /not GAAP financial statements and not an audit, review, or compilation/);
+    assert.match(BOUNDARY_LINES[2], /unauthenticated and the server signs as owner/);
+    assert.match(BOUNDARY_LINES[3], /does not cover interfund transfers, budgets, pledges, or tax receipts/);
+    assert.ok(html.includes(">demo, not a tax document<"));
+    assert.ok(html.includes(TESTNET_NOTICE));
+  });
+
+  it("the CSV header carries D2 and D3 after the receipt note, and fund on every row plus reconciliation", async () => {
+    const text = await (await createMockFetch()("/api/export.csv")).text();
+    const lines = text.trim().split("\n");
+    assert.deepEqual(lines.slice(0, 3), [`# ${RECEIPT_NOTE}`, `# ${BOUNDARY_LINES[0]}`, `# ${BOUNDARY_LINES[1]}`]);
+    const header = lines[3].split(",");
+    const rows = lines.filter((l) => l.startsWith("gift,") || l.startsWith("payout,"));
+    for (const r of rows) assert.ok(["general", "missions", "building"].includes(r.split(",")[header.indexOf("fund")]), r);
+    assert.ok(lines.includes("payout,bill-electric-001,power-co.demo.testnet,building,with donor restrictions,180000000,paid,2026-11-03T15:20:00.000Z,demoTxElectric001PaidOnTestnet"));
+    assert.ok(lines.includes("general,without donor restrictions,1,100000000,0,90000000,10000000"));
+    assert.match(text, /fund ledgers total \(received - paid, from chain\): 230000000; match/);
   });
 });
 
@@ -215,7 +309,7 @@ describe("CSV download", () => {
     const f = createMockFetch();
     const text = await (await f("/api/export.csv")).text();
     assert.ok(text.startsWith(`# ${RECEIPT_NOTE}`));
-    assert.match(text, /gift,g5,donor-demo-5,missions,40000000,refunded/);
+    assert.match(text, /gift,g5,donor-demo-5,missions,with donor restrictions,40000000,refunded/);
   });
 });
 

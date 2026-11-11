@@ -45,6 +45,19 @@ export function escapeHtml(s: unknown): string {
     .replaceAll("'", "&#39;");
 }
 
+/** ISO 8601 timestamp as "2026-11-11 14:05 UTC"; "—" when missing or unparseable. */
+export function formatTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/** Signed atomic-unit difference as USDC, e.g. "-9.95 USDC". */
+export function formatSignedUsdc(atomic: string): string {
+  return atomic.startsWith("-") ? `-${formatUsdc(atomic.slice(1))}` : formatUsdc(atomic);
+}
+
 const INSUFFICIENT_FUND = /insufficient fund balance: (\w+) has (\d+) available, bill needs (\d+)/;
 
 /**

@@ -3,7 +3,7 @@
 // deposit address, no live cross-chain deposit). Fake .testnet names only:
 // no keys, no real wallets, no mainnet anything.
 import type { FetchLike } from "./api.ts";
-import { FUNDS, RECEIPT_NOTE } from "./types.ts";
+import { BOUNDARY_LINES, FUND_RESTRICTION, FUNDS, RECEIPT_NOTE } from "./types.ts";
 import type { Fund, Gift, HoldView, PayoutView, Summary } from "./types.ts";
 
 const gift = (id: string, donor: string, fund: Gift["fund"], amountOut: string, status: Gift["status"]): Gift => ({
@@ -32,12 +32,34 @@ export function fixtureState() {
       gift("g1", "donor-demo-1", "general", "100000000", "settled"),
     ] as Gift[],
     // Every bill names a fund and fits it: building received 250, paid 180 (electric for the building).
-    // The general-fund hold (90 of 100 available) can be approved; see fund math in summarize().
+    // The general-fund hold reserves 90 of its 100, leaving 10 uncommitted; see fund math in summarize().
     payouts: [
-      { bill_id: "bill-electric-001", vendor: "power-co.demo.testnet", amount: "180000000", memo: "Electric, October", fund: "building", status: "paid" },
+      {
+        bill_id: "bill-electric-001",
+        vendor: "power-co.demo.testnet",
+        amount: "180000000",
+        memo: "Electric, October",
+        fund: "building",
+        status: "paid",
+        requestedAt: "2026-11-03T15:20:00.000Z",
+        paidAt: "2026-11-03T15:20:00.000Z",
+        paymentTxHash: "demoTxElectric001PaidOnTestnet",
+        requestTxHash: "demoTxElectric001PaidOnTestnet",
+      },
     ] as PayoutView[],
     holds: [
-      { bill_id: "bill-roof-002", vendor: "roofer.demo.testnet", amount: "90000000", memo: "Roof repair deposit", fund: "general", status: "held" },
+      {
+        bill_id: "bill-roof-002",
+        vendor: "roofer.demo.testnet",
+        amount: "90000000",
+        memo: "Roof repair deposit",
+        fund: "general",
+        status: "held",
+        requestedAt: "2026-11-10T18:05:00.000Z",
+        requestTxHash: "demoTxRoof002RequestOnTestnet",
+        paidAt: null,
+        paymentTxHash: null,
+      },
     ] as HoldView[],
   };
 }
@@ -46,44 +68,87 @@ export type FixtureState = ReturnType<typeof fixtureState>;
 
 const sum = (xs: string[]) => xs.reduce((a, b) => a + BigInt(b), 0n).toString();
 
-/** Fund balance as the contract computes it: settled gifts received minus payouts paid. */
-export function available(s: FixtureState, fund: Fund): bigint {
-  const received = sum(s.gifts.filter((g) => g.fund === fund && g.status === "settled").map((g) => g.amountOut));
-  const paid = sum(s.payouts.filter((p) => p.fund === fund).map((p) => p.amount));
-  return BigInt(received) - BigInt(paid);
+/** Fund ledger as the contract keeps it: received, paid, and held (outstanding holds, reserved). */
+export function ledger(s: FixtureState, fund: Fund) {
+  const received = BigInt(sum(s.gifts.filter((g) => g.fund === fund && g.status === "settled").map((g) => g.amountOut)));
+  const paid = BigInt(sum(s.payouts.filter((p) => p.fund === fund).map((p) => p.amount)));
+  const held = BigInt(sum(s.holds.filter((h) => h.fund === fund && h.status === "held").map((h) => h.amount)));
+  return { received, paid, held };
 }
 
-export function summarize(s: FixtureState): Summary {
+/** Uncommitted balance: received - paid - held, never negative. */
+export function available(s: FixtureState, fund: Fund): bigint {
+  const { received, paid, held } = ledger(s, fund);
+  const a = received - paid - held;
+  return a > 0n ? a : 0n;
+}
+
+/**
+ * Fixture summary. Live cash defaults to the fund ledger total (a matching treasury); pass `cash` to show a
+ * mismatch.
+ */
+export function summarize(s: FixtureState, cash?: string): Summary {
   const held = s.holds.filter((h) => h.status === "held");
   const giftsByFund = Object.fromEntries(
     FUNDS.map((f) => {
-      const settled = s.gifts.filter((g) => g.fund === f && g.status === "settled");
-      const received = sum(settled.map((g) => g.amountOut));
-      const paidOut = sum(s.payouts.filter((p) => p.fund === f).map((p) => p.amount));
+      const l = ledger(s, f);
       return [
         f,
         {
-          count: settled.length,
-          received,
-          paidOut,
-          held: sum(held.filter((h) => h.fund === f).map((h) => h.amount)),
-          available: (BigInt(received) - BigInt(paidOut)).toString(),
+          restriction: FUND_RESTRICTION[f],
+          count: s.gifts.filter((g) => g.fund === f && g.status === "settled").length,
+          received: l.received.toString(),
+          paidOut: l.paid.toString(),
+          held: l.held.toString(),
+          available: (l.received - l.paid - l.held).toString(),
         },
       ];
     }),
   ) as Summary["giftsByFund"];
+  const ledgerTotal = FUNDS.reduce((acc, f) => acc + ledger(s, f).received - ledger(s, f).paid, 0n);
+  const treasuryBalance = cash ?? ledgerTotal.toString();
+  const difference = BigInt(treasuryBalance) - ledgerTotal;
   return {
     giftsByFund,
+    treasuryBalance,
+    reconciliation: {
+      cash: treasuryBalance,
+      ledgerTotal: ledgerTotal.toString(),
+      ledgerSource: "chain",
+      difference: difference.toString(),
+      status: difference === 0n ? "match" : "mismatch",
+    },
     payouts: { paidCount: s.payouts.length, paidAmount: sum(s.payouts.map((p) => p.amount)) },
     holds: { heldCount: held.length, heldAmount: sum(held.map((h) => h.amount)) },
     receiptNote: RECEIPT_NOTE,
   };
 }
 
+/** Same layout as the API export: disclaimers, one row per gift/payout with fund, then reconciliation. */
 export function fixtureCsv(s: FixtureState): string {
-  const lines = [`# ${RECEIPT_NOTE}`, "type,id,party,fund,amount,status"];
-  for (const g of s.gifts) lines.push(`gift,${g.id},${g.donor},${g.fund},${g.amountOut},${g.status}`);
-  for (const p of s.payouts) lines.push(`payout,${p.bill_id},${p.vendor},${p.fund},${p.amount},${p.status}`);
+  const lines = [
+    `# ${RECEIPT_NOTE}`,
+    `# ${BOUNDARY_LINES[0]}`,
+    `# ${BOUNDARY_LINES[1]}`,
+    "type,id,party,fund,restriction,amount,status,paid_at,payment_ref",
+  ];
+  for (const g of s.gifts) {
+    lines.push(`gift,${g.id},${g.donor},${g.fund},${FUND_RESTRICTION[g.fund]},${g.amountOut},${g.status},,`);
+  }
+  for (const p of [...s.payouts, ...s.holds.filter((h) => h.status !== "approved")]) {
+    lines.push(
+      `payout,${p.bill_id},${p.vendor},${p.fund},${FUND_RESTRICTION[p.fund]},${p.amount},${p.status},${p.paidAt ?? ""},${p.paymentTxHash ?? ""}`,
+    );
+  }
+  const sum = summarize(s);
+  lines.push("", "# per-fund reconciliation (USDC atomic units; available = received - paid - held)");
+  lines.push("fund,restriction,gifts,received,paid,held,available");
+  for (const f of FUNDS) {
+    const x = sum.giftsByFund[f];
+    lines.push([f, x.restriction, x.count, x.received, x.paidOut, x.held, x.available].join(","));
+  }
+  const r = sum.reconciliation!;
+  lines.push(`# treasury cash (on-chain): ${r.cash}; fund ledgers total (received - paid, from chain): ${r.ledgerTotal}; ${r.status}`);
   return lines.join("\n") + "\n";
 }
 
@@ -116,15 +181,30 @@ export function createMockFetch(state: FixtureState = fixtureState()): FetchLike
       if (!hold) return json(404, { error: `no hold ${billId}` });
       if (hold.status !== "held") return json(409, { error: `hold ${billId} is ${hold.status}` });
       if (m[2] === "approve") {
-        // Same re-check (and message) as the contract's approve_hold.
-        const avail = available(state, hold.fund);
+        // Same re-check (and message) as the contract's approve_hold: this hold's own reservation set aside.
+        const l = ledger(state, hold.fund);
+        const excl = l.received - l.paid - (l.held - BigInt(hold.amount));
+        const avail = excl > 0n ? excl : 0n;
         if (BigInt(hold.amount) > avail) {
           return json(422, {
             error: `contract rejected: insufficient fund balance: ${hold.fund} has ${avail} available, bill needs ${hold.amount}`,
           });
         }
         hold.status = "approved";
-        state.payouts.unshift({ bill_id: hold.bill_id, vendor: hold.vendor, amount: hold.amount, memo: hold.memo, fund: hold.fund, status: "paid" });
+        hold.paidAt = new Date().toISOString();
+        hold.paymentTxHash = `demoTxApprove-${hold.bill_id}`;
+        state.payouts.unshift({
+          bill_id: hold.bill_id,
+          vendor: hold.vendor,
+          amount: hold.amount,
+          memo: hold.memo,
+          fund: hold.fund,
+          status: "paid",
+          requestedAt: hold.requestedAt,
+          paidAt: hold.paidAt,
+          paymentTxHash: hold.paymentTxHash,
+          requestTxHash: hold.requestTxHash,
+        });
       } else {
         hold.status = "rejected";
       }

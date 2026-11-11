@@ -18,3 +18,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .status-held { color: #6b3fa0; }
 .empty { color: #777; font-style: italic; }
 footer { margin-top: 3rem; color: #777; font-size: 0.8rem; }
+.boundaries { font-size: 0.85rem; color: #333; background: #f6f6f6; border-left: 3px solid #999; margin: 0.5rem 0; padding: 0.4rem 0.5rem 0.4rem 1.6rem; }
+.note { color: #555; font-size: 0.85rem; }
+.recon { font-weight: 600; }
+.recon-match { color: #17663a; }
+.recon-mismatch { color: #fff; background: #a00; padding: 0.3rem 0.5rem; border-radius: 4px; }
+.recon-unknown { color: #8a5a00; }
