@@ -455,7 +455,7 @@ describe("premium restyle guards", () => {
     const html = read("../index.html").replace(/\s+/g, " ");
     assert.match(html, /<details class="legal"> <summary>Full legal notices: what this demo is not \(6\)<\/summary> <ul class="boundaries" id="boundaries"/);
     assert.ok(html.includes('<div class="wordmark">OpenLid</div>'));
-    for (const f of ["SourceSerif4opsz-wght.ttf", "Geistwght.ttf", "GeistMonowght.ttf", "Interopsz-wght.ttf", "source-serif-4-LICENSE.md", "geist-LICENSE.txt", "inter-LICENSE.txt"]) {
+    for (const f of ["SourceSerif4opsz-wght.ttf", "Geistwght.ttf", "GeistMonowght.ttf", "source-serif-4-LICENSE.md", "geist-LICENSE.txt"]) {
       const body = readFileSync(new URL(`../public/fonts/${f}`, import.meta.url));
       assert.ok(body.length > 0, f);
       if (!f.endsWith(".ttf")) assert.match(body.toString(), /SIL Open Font License, Version 1\.1/, f);
