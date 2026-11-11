@@ -13,6 +13,10 @@ export function isSimulatedAddress(addr: string): boolean {
 export const FUNDS = ['general', 'missions', 'building'] as const;
 export type Fund = (typeof FUNDS)[number];
 
+export function isFund(v: unknown): v is Fund {
+  return typeof v === 'string' && (FUNDS as readonly string[]).includes(v);
+}
+
 export type GiftStatus = 'pending_deposit' | 'processing' | 'settled' | 'refunded' | 'failed';
 
 export const ONECLICK_STATUSES = [
@@ -119,6 +123,7 @@ export interface PayoutView {
   vendor: string;
   amount: string;
   memo: string;
+  fund: Fund;
   status: 'paid';
 }
 
@@ -130,6 +135,7 @@ export interface HoldView {
   vendor: string;
   amount: string;
   memo: string;
+  fund: Fund;
   status: HoldStatus;
 }
 
@@ -139,7 +145,24 @@ export interface PayoutRecord {
   vendor: string;
   amount: string;
   memo: string;
+  fund: Fund;
   status: 'paid' | 'held' | 'rejected';
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Per-fund row of GET /api/summary `giftsByFund`. Amounts are USDC atomic units.
+ * `available = received - paidOut`; outstanding holds (`held`) do not reduce it.
+ */
+export interface FundSummary {
+  /** Settled gift count. */
+  count: number;
+  /** Sum of settled gift amounts. */
+  received: string;
+  /** Sum of paid payouts from this fund. */
+  paidOut: string;
+  /** Sum of outstanding (`held`) holds on this fund. */
+  held: string;
+  available: string;
 }

@@ -11,9 +11,11 @@ import {
   RECEIPT_NOTE,
   SIM_ADDRESS_PREFIX,
   STATUS_MAP,
+  isFund,
   isSimulatedAddress,
   toGiftView,
   type Fund,
+  type FundSummary,
   type GiftRecord,
   type HoldStatus,
   type HoldView,
@@ -68,6 +70,12 @@ function reqAmount(body: Record<string, unknown>, key: string): string {
   return v;
 }
 
+function reqFund(body: Record<string, unknown>): Fund {
+  const fund = body.fund;
+  if (!isFund(fund)) throw new HttpError(400, `fund must be one of ${FUNDS.join(', ')}`);
+  return fund;
+}
+
 async function jsonBody(c: Context): Promise<Record<string, unknown>> {
   let body: unknown;
   try {
@@ -84,7 +92,7 @@ function sumAmounts(xs: Array<string | null | undefined>): string {
 }
 
 function payoutView(p: PayoutRecord): PayoutView {
-  return { bill_id: p.billId, vendor: p.vendor, amount: p.amount, memo: p.memo, status: 'paid' };
+  return { bill_id: p.billId, vendor: p.vendor, amount: p.amount, memo: p.memo, fund: p.fund, status: 'paid' };
 }
 
 const CSV_INJECTION = /^[=+\-@\t\r]/;
@@ -123,10 +131,7 @@ export function createApp(deps: AppDeps): Hono {
   app.post('/api/gifts/quote', async (c) => {
     const body = await jsonBody(c);
     const donor = reqString(body, 'donor', 200);
-    const fund = body.fund;
-    if (typeof fund !== 'string' || !(FUNDS as readonly string[]).includes(fund)) {
-      throw new HttpError(400, `fund must be one of ${FUNDS.join(', ')}`);
-    }
+    const fund = reqFund(body);
     const originAsset = reqString(body, 'originAsset');
     const amount = reqAmount(body, 'amount');
     const refundTo = reqString(body, 'refundTo');
@@ -167,7 +172,7 @@ export function createApp(deps: AppDeps): Hono {
     const gift: GiftRecord = {
       id,
       donor,
-      fund: fund as Fund,
+      fund,
       originAsset,
       refundTo,
       depositAddress,
@@ -193,7 +198,7 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get('/api/gifts', (c) => {
     const fund = c.req.query('fund');
-    if (fund !== undefined && !(FUNDS as readonly string[]).includes(fund)) {
+    if (fund !== undefined && !isFund(fund)) {
       throw new HttpError(400, `fund must be one of ${FUNDS.join(', ')}`);
     }
     const gifts = store.listGifts().filter((g) => !fund || g.fund === fund);
@@ -250,8 +255,9 @@ export function createApp(deps: AppDeps): Hono {
     settling.add(gift.id);
     try {
       const amount = gift.amountOut;
-      // Mints the test FT into the treasury contract. No 1Click deposit is involved.
-      const { txHash } = await deps.settlement.creditTreasury({ giftId: gift.id, amount });
+      // Mints the test FT into the treasury contract, then the owner records it in the gift's fund with
+      // credit_fund. No 1Click deposit is involved. Throws (gift stays unsettled) unless both succeed.
+      const { txHash } = await deps.settlement.creditTreasury({ giftId: gift.id, amount, fund: gift.fund });
       const updated = await store.updateGift(gift.id, {
         status: 'settled',
         settledAmount: amount,
@@ -272,16 +278,18 @@ export function createApp(deps: AppDeps): Hono {
     if (!NEAR_ACCOUNT.test(vendor)) throw new HttpError(400, 'vendor must be a valid NEAR account id');
     const amount = reqAmount(body, 'amount');
     const billId = reqString(body, 'billId', 128);
+    const fund = reqFund(body);
     const memoRaw = body.memo ?? '';
     if (typeof memoRaw !== 'string' || memoRaw.length > 512) throw new HttpError(400, 'memo must be a string (max 512)');
     const memo = memoRaw;
 
     if (store.getPayout(billId)) throw new DuplicateBillIdError(billId);
-    // Signed with the agent's function-call key (request_payout only). The contract enforces policy.
-    const result = await near.requestPayout({ vendor, amount, billId, memo });
+    // Signed with the agent's function-call key (request_payout only). The contract enforces policy,
+    // including that the bill fits the fund's on-chain available balance.
+    const result = await near.requestPayout({ vendor, amount, billId, memo, fund });
     const ts = now().toISOString();
-    await store.upsertPayout({ billId, vendor, amount, memo, status: result.status, createdAt: ts, updatedAt: ts });
-    return c.json({ billId, status: result.status, vendor, amount });
+    await store.upsertPayout({ billId, vendor, amount, memo, fund, status: result.status, createdAt: ts, updatedAt: ts });
+    return c.json({ billId, status: result.status, vendor, amount, fund });
   });
 
   app.get('/api/payouts', (c) => {
@@ -305,9 +313,17 @@ export function createApp(deps: AppDeps): Hono {
     else await near.rejectHold(billId);
 
     const hold = await near.getHold(billId).catch(() => null);
+    if (action === 'approve' && hold?.status === 'held') {
+      // approve_hold succeeded but its ft_transfer callback rolled the payout back.
+      throw new ContractRejectedError(
+        `ft_transfer failed and the approval was rolled back for ${billId} (treasury may lack token balance)`,
+      );
+    }
     const local = store.getPayout(billId);
     const ts = now().toISOString();
-    const base = local ?? (hold ? { billId, vendor: hold.vendor, amount: hold.amount, memo: hold.memo, createdAt: ts } : null);
+    const base =
+      local ??
+      (hold ? { billId, vendor: hold.vendor, amount: hold.amount, memo: hold.memo, fund: hold.fund, createdAt: ts } : null);
     if (base) {
       await store.upsertPayout({ ...base, status: action === 'approve' ? 'paid' : 'rejected', updatedAt: ts });
     }
@@ -321,21 +337,34 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get('/api/summary', async (c) => {
     const gifts = store.listGifts();
-    const giftsByFund = Object.fromEntries(
-      FUNDS.map((f) => {
-        const settled = gifts.filter((g) => g.fund === f && g.status === 'settled');
-        return [f, { settledAmount: sumAmounts(settled.map((g) => g.settledAmount)), count: settled.length }];
-      }),
-    );
     const paid = store.listPayouts().filter((p) => p.status === 'paid');
+    let held: HoldView[] = [];
     let holds: { heldCount: number; heldAmount: string; available?: false };
     try {
-      const held: HoldView[] = await near.listHolds('held');
+      held = await near.listHolds('held');
       holds = { heldCount: held.length, heldAmount: sumAmounts(held.map((h) => h.amount)) };
     } catch (err) {
       if (!(err instanceof NearUnavailableError)) throw err;
       holds = { heldCount: 0, heldAmount: '0', available: false };
     }
+    // Mirrors the contract's per-fund ledger: available = received - paidOut; holds do not reduce it.
+    const giftsByFund = Object.fromEntries(
+      FUNDS.map((f): [Fund, FundSummary] => {
+        const settled = gifts.filter((g) => g.fund === f && g.status === 'settled');
+        const received = sumAmounts(settled.map((g) => g.settledAmount));
+        const paidOut = sumAmounts(paid.filter((p) => p.fund === f).map((p) => p.amount));
+        return [
+          f,
+          {
+            count: settled.length,
+            received,
+            paidOut,
+            held: sumAmounts(held.filter((h) => h.fund === f).map((h) => h.amount)),
+            available: (BigInt(received) - BigInt(paidOut)).toString(),
+          },
+        ];
+      }),
+    ) as Record<Fund, FundSummary>;
     let treasuryBalance: string | null = null;
     try {
       treasuryBalance = (await near.treasuryBalance?.()) ?? null;
@@ -358,7 +387,7 @@ export function createApp(deps: AppDeps): Hono {
       rows.push(['gift', g.id, g.createdAt, g.updatedAt, g.fund, g.donor, '', g.amountIn, g.originAsset, g.settledAmount ?? g.amountOut, g.status, g.depositAddress, '']);
     }
     for (const p of store.listPayouts()) {
-      rows.push(['payout', p.billId, p.createdAt, p.updatedAt, '', '', p.vendor, '', '', p.amount, p.status, '', p.memo]);
+      rows.push(['payout', p.billId, p.createdAt, p.updatedAt, p.fund, '', p.vendor, '', '', p.amount, p.status, '', p.memo]);
     }
     const lines = [`# ${RECEIPT_NOTE}`, header.join(','), ...rows.map((r) => r.map(csvCell).join(','))];
     c.header('content-type', 'text/csv; charset=utf-8');

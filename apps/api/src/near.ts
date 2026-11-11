@@ -1,13 +1,15 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Account, JsonRpcProvider, KeyPair, KeyPairSigner, type KeyPairString } from 'near-api-js';
-import type { HoldStatus, HoldView, PayoutView } from './types.js';
+import type { Fund, HoldStatus, HoldView, PayoutView } from './types.js';
 
 export interface RequestPayoutArgs {
   vendor: string;
   amount: string;
   billId: string;
   memo: string;
+  /** The bill is paid only from this fund's on-chain ledger balance. */
+  fund: Fund;
 }
 
 export interface RequestPayoutResult {
@@ -31,7 +33,7 @@ export interface NearContractClient {
   treasuryBalance?(): Promise<string | null>;
 }
 
-/** The contract panicked (unauthorized, unknown vendor, cap exceeded, duplicate bill, ...). Maps to 4xx. */
+/** The contract panicked (unauthorized, unknown vendor, cap exceeded, insufficient fund balance, duplicate bill, ...). Maps to 4xx. */
 export class ContractRejectedError extends Error {
   constructor(message: string) {
     super(message);
@@ -212,7 +214,7 @@ export class NearRpcContractClient implements NearContractClient {
       await account.callFunction({
         contractId: this.opts.contractId,
         methodName: 'request_payout',
-        args: { vendor: args.vendor, amount: args.amount, bill_id: args.billId, memo: args.memo },
+        args: { vendor: args.vendor, amount: args.amount, bill_id: args.billId, memo: args.memo, fund: args.fund },
         gas: GAS,
       });
     } catch (err) {
@@ -305,12 +307,20 @@ export class UnconfiguredNearClient implements NearContractClient {
   }
 }
 
+export interface CreditTreasuryArgs {
+  giftId: string;
+  amount: string;
+  /** Fund the gift was given to; recorded on-chain with `credit_fund`. */
+  fund: Fund;
+}
+
 /**
  * Simulated cross-chain settlement for the testnet demo. Credits the treasury contract with the test FT
- * (`contracts/test-ft`, symbol tUSDC) instead of receiving a real 1Click swap.
+ * (`contracts/test-ft`, symbol tUSDC) instead of receiving a real 1Click swap, then records the gift in
+ * the treasury's per-fund ledger (`credit_fund`). Must throw unless BOTH steps succeeded.
  */
 export interface TestnetSettlement {
-  creditTreasury(args: { giftId: string; amount: string }): Promise<{ txHash: string | null }>;
+  creditTreasury(args: CreditTreasuryArgs): Promise<{ txHash: string | null; creditTxHash?: string | null }>;
 }
 
 export interface NearTestFtSettlementOptions {
@@ -320,12 +330,25 @@ export interface NearTestFtSettlementOptions {
   tokenId: string;
   /** Treasury contract that receives the minted test FT (OPENLID_CONTRACT_ID). */
   treasuryId: string;
-  /** Test FT owner allowed to call `mint` (OPENLID_OWNER_ACCOUNT_ID in the demo). */
+  /**
+   * Signs both the test FT `mint` and the treasury's owner-only `credit_fund`, so it must be the test FT
+   * owner AND the treasury owner (OPENLID_OWNER_ACCOUNT_ID; the demo root account is both).
+   */
   minterAccountId: string;
   minterKeyFile: string;
 }
 
-/** Calls `mint(account, amount)` on the test FT, signed by its owner. Testnet only. */
+const txHashOf = (res: unknown): string | null => {
+  const r = res as { transaction_outcome?: { id?: string }; transaction?: { hash?: string } };
+  return r.transaction_outcome?.id ?? r.transaction?.hash ?? null;
+};
+
+/**
+ * Calls `mint(account, amount)` on the test FT, then `credit_fund(fund, amount, gift_id)` on the treasury,
+ * both signed by the owner. Testnet only. If `credit_fund` fails the error propagates and the gift stays
+ * unsettled; the minted tokens then sit in the treasury unallocated to any fund (they cannot be spent by a
+ * bill), and a retry mints again before crediting.
+ */
 export class NearTestFtSettlement implements TestnetSettlement {
   private readonly provider: JsonRpcProvider;
   private minter?: Promise<Account>;
@@ -343,16 +366,23 @@ export class NearTestFtSettlement implements TestnetSettlement {
     return this.minter;
   }
 
-  async creditTreasury({ amount }: { giftId: string; amount: string }): Promise<{ txHash: string | null }> {
+  async creditTreasury({ giftId, amount, fund }: CreditTreasuryArgs): Promise<{ txHash: string | null; creditTxHash: string | null }> {
     const account = await this.account();
     try {
-      const res = (await account.callFunctionRaw({
+      const mint = await account.callFunctionRaw({
         contractId: this.opts.tokenId,
         methodName: 'mint',
         args: { account: this.opts.treasuryId, amount },
         gas: GAS,
-      })) as { transaction_outcome?: { id?: string }; transaction?: { hash?: string } };
-      return { txHash: res.transaction_outcome?.id ?? res.transaction?.hash ?? null };
+      });
+      // Ledger only: the tokens above are what the fund credit stands for.
+      const credit = await account.callFunctionRaw({
+        contractId: this.opts.treasuryId,
+        methodName: 'credit_fund',
+        args: { fund, amount, gift_id: giftId },
+        gas: GAS,
+      });
+      return { txHash: txHashOf(mint), creditTxHash: txHashOf(credit) };
     } catch (err) {
       throw classifyNearError(err);
     }

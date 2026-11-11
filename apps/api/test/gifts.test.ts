@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
-import { UnconfiguredSettlement } from '../src/near.js';
+import { ContractRejectedError, UnconfiguredSettlement } from '../src/near.js';
 import { createDryRunStubFetch, DRY_RUN_STUB_BASE_URL, HttpOneClickClient, type OneClickQuoteRequest } from '../src/oneclick.js';
 import { JsonStore } from '../src/store.js';
 import { giftBody, makeHarness, TEST_API_KEY } from './helpers.js';
@@ -140,7 +140,7 @@ describe('gifts', () => {
     assert.equal((await h.request('GET', `/api/gifts/${a.id}`)).json.status, 'settled');
 
     const summary = (await h.request('GET', '/api/summary')).json;
-    assert.deepEqual(summary.giftsByFund.general, { settledAmount: '9960000', count: 1 });
+    assert.deepEqual(summary.giftsByFund.general, { count: 1, received: '9960000', paidOut: '0', held: '0', available: '9960000' });
   });
 
   it('4. sync maps SUCCESS/REFUNDED/FAILED to settled/refunded/failed and GET /api/gifts shows them', async () => {
@@ -180,7 +180,7 @@ describe('gifts', () => {
 
     // Only the settled gift counts toward the fund summary.
     const summary = (await h.request('GET', '/api/summary')).json;
-    assert.deepEqual(summary.giftsByFund.general, { settledAmount: '9950000', count: 1 });
+    assert.deepEqual(summary.giftsByFund.general, { count: 1, received: '9950000', paidOut: '0', held: '0', available: '9950000' });
   });
 
   it('sync sends depositMemo when the quote returned one', async () => {
@@ -357,11 +357,15 @@ describe('simulate-settlement (testnet only)', () => {
     assert.equal(r.json.settlementTxHash, 'fake-tx-1');
     assert.equal(r.json.quoteMode, 'dry_run');
     assert.equal(r.json.receiptNote, 'demo, not a tax document');
-    assert.deepEqual(h.settlement.credits, [{ giftId: g.id, amount: '9950000' }]);
+    assert.deepEqual(h.settlement.credits, [{ giftId: g.id, amount: '9950000', fund: 'building' }]);
+    // The owner's credit_fund landed in the gift's fund on the (fake) contract ledger, and nowhere else.
+    assert.deepEqual(h.treasury.ledger.get('building'), { received: 9_950_000n, paid: 0n });
+    assert.deepEqual(h.treasury.ledger.get('general'), { received: 0n, paid: 0n });
+    assert.ok(h.treasury.creditedGifts.has(g.id));
 
     assert.equal((await h.request('GET', '/api/gifts')).json.gifts[0].status, 'settled');
     const summary = (await h.request('GET', '/api/summary')).json;
-    assert.deepEqual(summary.giftsByFund.building, { settledAmount: '9950000', count: 1 });
+    assert.deepEqual(summary.giftsByFund.building, { count: 1, received: '9950000', paidOut: '0', held: '0', available: '9950000' });
 
     // Settling twice is refused and does not mint again.
     const again = await h.request('POST', `/api/gifts/${g.id}/simulate-settlement`);
@@ -401,6 +405,27 @@ describe('simulate-settlement (testnet only)', () => {
     assert.equal(r.status, 500);
     assert.equal((await h.request('GET', `/api/gifts/${sim.id}`)).json.status, 'pending_deposit');
     assert.equal((await h.request('POST', '/api/gifts/nope/simulate-settlement')).status, 404);
+  });
+
+  it('fails and leaves the gift unsettled when credit_fund fails after the mint', async () => {
+    h = await makeHarness();
+    const g = (await h.request('POST', '/api/gifts/quote', giftBody({ fund: 'missions' }))).json;
+    h.settlement.failCredit = new ContractRejectedError('unauthorized: caller is not owner');
+    const r = await h.request('POST', `/api/gifts/${g.id}/simulate-settlement`);
+    assert.equal(r.status, 422);
+    assert.match(r.json.error, /not owner/);
+    assert.equal(h.settlement.minted.length, 1);
+    const after = (await h.request('GET', `/api/gifts/${g.id}`)).json;
+    assert.equal(after.status, 'pending_deposit');
+    assert.equal(after.settledAmount, null);
+    assert.deepEqual(h.treasury.ledger.get('missions'), { received: 0n, paid: 0n });
+    assert.equal((await h.request('GET', '/api/summary')).json.giftsByFund.missions.received, '0');
+
+    // A retry once credit_fund works settles it; the fake contract rejects a double credit of the same gift.
+    h.settlement.failCredit = undefined;
+    assert.equal((await h.request('POST', `/api/gifts/${g.id}/simulate-settlement`)).status, 200);
+    assert.deepEqual(h.treasury.ledger.get('missions'), { received: 9_950_000n, paid: 0n });
+    assert.throws(() => h.treasury.creditFund('missions', '1', g.id), /duplicate gift_id/);
   });
 
   it('returns 503 when settlement is not configured', async () => {

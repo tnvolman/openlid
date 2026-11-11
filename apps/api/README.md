@@ -33,7 +33,7 @@ CORS allows `http://127.0.0.1:5173` and `http://localhost:5173` (the Vite UI).
 | `OPENLID_USDC_TOKEN_ID` | Testnet test FT (tUSDC) account. 1Click `destinationAsset` is `nep141:<this>`; simulated settlement mints this token. |
 | `OPENLID_AGENT_ACCOUNT_ID` | Account that owns the agent's function-call key. |
 | `OPENLID_AGENT_KEY_FILE` | **Path** to the agent key file (see below). Never the key itself. |
-| `OPENLID_OWNER_ACCOUNT_ID` | Treasurer account, for demo approve/reject. In the demo it is also the test FT owner that calls `mint` for simulated settlement. |
+| `OPENLID_OWNER_ACCOUNT_ID` | Treasurer account (treasury `owner`), for demo approve/reject and the `credit_fund` ledger update at simulated settlement. In the demo it is also the test FT owner that calls `mint`. |
 | `OPENLID_OWNER_KEY_FILE` | Optional path to a demo owner key. Leave it unset if the treasurer signs with their own wallet. |
 | `OPENLID_DEMO_KEYS_DIR` | Gitignored directory where the demo generates testnet keys. If an `*_KEY_FILE` is unset, the API looks for `<dir>/<accountId>.json`. Use an absolute path, because relative paths resolve from the API's working directory. |
 | `ONECLICK_BASE_URL` | Default `https://1click.chaindefuser.com`. Only used when `ONECLICK_API_KEY` is set. |
@@ -46,7 +46,7 @@ If the contract, agent account, or agent key file is missing, the gift endpoints
 
 ### Agent key: restricted function-call key only
 
-`POST /api/payouts/request` signs `request_payout` with the key at `OPENLID_AGENT_KEY_FILE`. That key **must be a NEAR function-call access key** restricted to `receiver_id = OPENLID_CONTRACT_ID` and `method_names = ["request_payout"]`. Before the first use, the API looks up the key on-chain with `view_access_key`. It **refuses full-access keys**, and keys scoped to any other contract or method. A function-call key can't move funds directly, so the agent can only *ask* the contract to pay. The contract enforces the allowlist, per-bill limit, monthly cap, and hold path.
+`POST /api/payouts/request` signs `request_payout` with the key at `OPENLID_AGENT_KEY_FILE`. That key **must be a NEAR function-call access key** restricted to `receiver_id = OPENLID_CONTRACT_ID` and `method_names = ["request_payout"]`. Before the first use, the API looks up the key on-chain with `view_access_key`. It **refuses full-access keys**, and keys scoped to any other contract or method. A function-call key can't move funds directly, so the agent can only *ask* the contract to pay. The contract enforces the allowlist, per-bill limit, monthly cap, hold path, and per-fund balance (a bill names a fund and can only be paid from that fund's on-chain `available`).
 
 You can issue one with NEAR CLI, something like `near account add-key <agent> grant-function-call-access --receiver-account-id <contract> --method-names request_payout ...`. Keep the generated key file outside this repository.
 
@@ -62,12 +62,12 @@ The agent key is never used for `approve_hold` / `reject_hold`. Those are treasu
 | GET | `/api/gifts[?fund=]` | `{ gifts: Gift[] }`, newest first. |
 | GET | `/api/gifts/:id` | One gift. |
 | POST | `/api/gifts/:id/sync` | For a real 1Click address (test fixtures only), polls `GET /v0/status?depositAddress=…[&depositMemo=…]` and maps the status. For a `sim:` address, it doesn't call 1Click and returns the gift unchanged. |
-| POST | `/api/gifts/:id/simulate-settlement` | **Testnet only** (403 on `mainnet` or any other network). For a `sim:` gift that is `pending_deposit`/`processing`, mints `amountOut` of the test FT into the treasury contract (`mint(account, amount)`, signed by the test FT owner). Then marks the gift `settled` and records `settlementTxHash`. Returns `409` if already settled or not a `sim:` gift, `503` if not configured. Never sends a 1Click deposit. |
-| POST | `/api/payouts/request` | `{ vendor, amount, billId, memo }` → `{ billId, status: "paid"|"held", vendor, amount }`. A contract panic returns `422 { error }`. |
+| POST | `/api/gifts/:id/simulate-settlement` | **Testnet only** (403 on `mainnet` or any other network). For a `sim:` gift that is `pending_deposit`/`processing`, mints `amountOut` of the test FT into the treasury contract (`mint(account, amount)`, signed by the test FT owner), then signs the treasury's owner-only `credit_fund(fund, amount, gift_id)` with the gift's fund, amount and id. Only if both succeed is the gift marked `settled` with `settlementTxHash` (the mint tx); if `credit_fund` fails the request fails and the gift stays unsettled. Returns `409` if already settled or not a `sim:` gift, `503` if not configured. Never sends a 1Click deposit. |
+| POST | `/api/payouts/request` | `{ vendor, amount, billId, memo, fund }` → `{ billId, status: "paid"|"held", vendor, amount, fund }`. `fund` is required (`general`/`missions`/`building`, else `400`). A contract panic, e.g. `insufficient fund balance: building has 0 available, bill needs 50000000`, returns `422 { error }`. |
 | GET | `/api/payouts` | `{ payouts: PayoutView[] }`, paid payouts submitted through this API. |
 | GET | `/api/holds[?status=held|approved|rejected]` | `{ holds: HoldView[] }` from contract `list_holds`. |
 | POST | `/api/holds/:billId/approve`, `/reject` | Treasurer path (owner key). |
-| GET | `/api/summary` | Settled gifts by fund, paid payouts, outstanding holds, `receiptNote`. |
+| GET | `/api/summary` | `giftsByFund.{general,missions,building}` = `{ count, received, paidOut, held, available }` (`available = received - paidOut`; holds do not reduce it), `treasuryBalance`, paid payouts, outstanding holds, `receiptNote`. |
 | GET | `/api/export.csv` | First line `# demo, not a tax document`, then one table with a `type` column (`gift` / `payout`). Cells starting with `= + - @` are prefixed with `'` so spreadsheets don't run them as formulas. |
 
 Status mapping: `PENDING_DEPOSIT`→`pending_deposit`; `KNOWN_DEPOSIT_TX`, `PROCESSING`, `INCOMPLETE_DEPOSIT`→`processing`; `SUCCESS`→`settled`; `REFUNDED`→`refunded`; `FAILED`→`failed`.
@@ -84,7 +84,8 @@ Errors are always `{ "error": "..." }`: `400` validation, `403` settlement refus
 ## How tests mock 1Click and NEAR
 
 - **1Click:** tests use the production `HttpOneClickClient` with an injected `fetch` (`MockOneClick` in `test/helpers.ts`). By default the mock returns the official dry-run shape, with no `depositAddress`. Queuing an address turns the next response into a non-dry-shaped fixture, so matching against real addresses and the `SUCCESS`/`REFUNDED`/`FAILED` status mapping are still tested. Statuses are keyed by deposit address. The mock records each request, so tests check that every quote has `dry: true`, plus the `X-API-Key` header and the `depositAddress`/`depositMemo` query. The local no-key stub (`createDryRunStubFetch`) is tested separately. No network calls are made.
-- **Settlement:** tests inject `FakeSettlement`, which records test-FT credits instead of minting. They cover the happy path (gift becomes `settled`), refusal on mainnet and on non-testnet networks, double-settle, and a failed mint that leaves the gift unchanged.
+- **Settlement:** tests inject `FakeSettlement`, which records test-FT credits instead of minting and then calls `FakeTreasury.creditFund` (the fake `credit_fund`). They cover the happy path (gift becomes `settled`, its fund is credited), refusal on mainnet and on non-testnet networks, double-settle, a failed mint, and a failed `credit_fund` that leaves the gift unsettled.
+- **Funds:** `FakeTreasury` enforces the contract's fund rules (invalid fund, insufficient balance for auto-pay and hold creation, approve re-check, `paid` rollback on a failed transfer). Tests fund bills by settling a simulated gift to that fund (`h.fundGift(fund, amount)`).
 - **NEAR:** tests inject `FakeTreasury`, an in-memory `NearContractClient` that follows the contract policy in `INTERFACES.md` (allowlist, per-bill limit → hold, monthly cap, duplicate `bill_id`). Panics are thrown as `ContractRejectedError`. No key file is needed. The key-file loader test writes a dummy placeholder string to a temp dir.
 - Each test uses a fresh temp `OPENLID_DATA_DIR`.
 
@@ -93,5 +94,7 @@ Errors are always `{ "error": "..." }`: `400` validation, `403` settlement refus
 - `GET /api/payouts` lists payouts submitted through this API instance. The contract has no "list payouts" view, so payouts made by other clients don't show up.
 - The JSON store is meant for a single API process.
 - The production `NearRpcContractClient` and `NearTestFtSettlement` (near-api-js) typecheck, but they have not been run against testnet in this tree. After `request_payout`, the client reads `get_payout` / `get_hold` back to decide `paid` vs `held`.
+- Gifts settled through `POST /api/gifts/:id/sync` (a real 1Click `SUCCESS`) are counted in `/api/summary` but are **not** credited on-chain with `credit_fund`; only simulated settlement does that today. Bills against such a gift's fund will be refused by the contract until the owner credits it.
+- If `credit_fund` fails after the mint succeeded, the minted tUSDC stays in the treasury unallocated to any fund (no bill can spend it); retrying settlement mints again and then credits.
 - Simulated settlement assumes the test FT exposes `mint(account, amount)` callable by `OPENLID_OWNER_ACCOUNT_ID`, and that the treasury can hold the token (storage registration, if the FT requires it, is the demo script's job).
 - The no-key dry-run stub quotes 1:1 (`amountOut = amountIn`). That is a placeholder, not a price, and only sensible for a 6-decimal stablecoin origin asset.

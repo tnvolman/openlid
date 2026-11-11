@@ -40,7 +40,8 @@ if (config.contractId && config.agentAccountId && agentKeyFile) {
   );
 }
 
-// Simulated settlement: the test FT owner (OPENLID_OWNER_ACCOUNT_ID) mints tUSDC into the treasury contract.
+// Simulated settlement: the owner (OPENLID_OWNER_ACCOUNT_ID; test FT owner AND treasury owner) mints tUSDC into
+// the treasury contract, then records it in the gift's fund with the treasury's owner-only credit_fund.
 let settlement: TestnetSettlement;
 if (config.network === 'testnet' && config.contractId && config.usdcTokenId && config.ownerAccountId && ownerKeyFile) {
   settlement = new NearTestFtSettlement({
