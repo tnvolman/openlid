@@ -7,6 +7,8 @@ Church stablecoin giving on NEAR. Hackathon build by Michael McClanahan (@tnvolm
 > **NEAR testnet only. $0 spend.** The cross-chain leg is a dry-run 1Click quote plus a simulated settlement on NEAR testnet. There are no mainnet accounts, no real funds, and no paid APIs, and no deposit is ever sent.
 > Receipts and exports are labeled **demo, not a tax document**. Never put mainnet funds or real keys in this project.
 
+The author also entered Onhire, an independent project, in this hackathon: https://github.com/tnvolman/onhire
+
 ## What it is
 
 - **Giving (design).** A donor gives from another chain through [NEAR Intents 1Click](https://docs.near-intents.org). Each gift gets its own 1Click quote and its own deposit address, tagged with the donor and a fund (`general`, `missions`, or `building`). Deposit addresses are never reused, and gifts are matched by deposit address only, never by amount.
