@@ -18,6 +18,11 @@ export interface Config {
   oneClickApiKey?: string;
   /** Where the testnet demo writes generated keys (`<dir>/<accountId>.json`). Paths only; never read into logs. */
   demoKeysDir?: string;
+  /**
+   * Shared secret the treasurer page sends as `X-OpenLid-Approval` on approve/reject (OPENLID_APPROVAL_SECRET).
+   * Unset: approve/reject fail closed with 503; every other route still works. Never logged or returned.
+   */
+  approvalSecret?: string;
 }
 
 function opt(env: NodeJS.ProcessEnv, name: string): string | undefined {
@@ -48,5 +53,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     oneClickBaseUrl: opt(env, 'ONECLICK_BASE_URL') ?? 'https://1click.chaindefuser.com',
     oneClickApiKey: opt(env, 'ONECLICK_API_KEY'),
     demoKeysDir: demoKeysDir ? resolve(demoKeysDir) : undefined,
+    approvalSecret: opt(env, 'OPENLID_APPROVAL_SECRET'),
   };
 }

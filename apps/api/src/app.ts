@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -51,7 +51,15 @@ export interface AppDeps {
   /** Quote deadline window. */
   quoteTtlMs?: number;
   now?: () => Date;
+  /**
+   * OPENLID_APPROVAL_SECRET. Approve/reject require it in the `X-OpenLid-Approval` header. Unset or empty:
+   * approve/reject return 503 (fail closed); all other routes are unaffected.
+   */
+  approvalSecret?: string;
 }
+
+/** Request header carrying the treasurer's approval secret (approve/reject only). */
+export const APPROVAL_HEADER = 'X-OpenLid-Approval';
 
 export const CORS_ORIGINS = ['http://127.0.0.1:5173', 'http://localhost:5173'];
 
@@ -100,6 +108,21 @@ async function jsonBody(c: Context): Promise<Record<string, unknown>> {
   return body as Record<string, unknown>;
 }
 
+const sha256 = (v: string) => createHash('sha256').update(v, 'utf8').digest();
+
+/**
+ * Throws 503 if no approval secret is configured, 401 if the header is missing or wrong. Compares SHA-256
+ * digests with timingSafeEqual so the comparison is constant-time and equal-length for any input. Neither
+ * the secret nor the supplied header is ever put in an error message.
+ */
+function requireApproval(c: Context, secret: string | undefined) {
+  if (!secret) throw new HttpError(503, 'approval secret not configured: set OPENLID_APPROVAL_SECRET on the API');
+  const supplied = c.req.header(APPROVAL_HEADER);
+  if (!supplied || !timingSafeEqual(sha256(supplied), sha256(secret))) {
+    throw new HttpError(401, `missing or invalid ${APPROVAL_HEADER} header`);
+  }
+}
+
 function sumAmounts(xs: Array<string | null | undefined>): string {
   return xs.reduce<bigint>((acc, x) => acc + (x && POSITIVE_INT.test(x) ? BigInt(x) : 0n), 0n).toString();
 }
@@ -140,10 +163,14 @@ export function createApp(deps: AppDeps): Hono {
   const { store, oneClick, near } = deps;
   const now = deps.now ?? (() => new Date());
   const quoteTtlMs = deps.quoteTtlMs ?? 60 * 60 * 1000;
+  const approvalSecret = deps.approvalSecret?.trim() || undefined;
 
   const app = new Hono();
 
-  app.use('/api/*', cors({ origin: CORS_ORIGINS, allowMethods: ['GET', 'POST', 'OPTIONS'] }));
+  app.use(
+    '/api/*',
+    cors({ origin: CORS_ORIGINS, allowMethods: ['GET', 'POST', 'OPTIONS'], allowHeaders: ['Content-Type', APPROVAL_HEADER] }),
+  );
   // GET /api/holds and friends must not be reused from the HTTP cache on Refresh.
   app.use('/api/*', async (c, next) => {
     await next();
@@ -413,6 +440,8 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   async function resolveHold(c: Context, action: 'approve' | 'reject') {
+    // Treasurer-only: checked before any contract call. The agent is never given this secret.
+    requireApproval(c, approvalSecret);
     const billId = c.req.param('billId');
     if (!billId) throw new HttpError(400, 'billId is required');
     const { txHash } = action === 'approve' ? await near.approveHold(billId) : await near.rejectHold(billId);

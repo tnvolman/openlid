@@ -240,7 +240,7 @@ Gift `status` mapping (store OpenLid names, never guess a match by amount):
 
 `GET /api/holds?status=held` — `{ "holds": HoldRow[] }`: each the contract `HoldView` (with `fund`) plus `requestedAt`, `requestTxHash`, and, once approved, `paidAt` and `paymentTxHash`.
 
-`POST /api/holds/:billId/approve` and `POST /api/holds/:billId/reject` — treasurer path. In the demo these call the contract as `owner`. The owner key, if used at all, is a local file path in env, never committed. Returns `{ billId, status, hold, txHash }` (`hold` is a `HoldRow`, with `fund`; `txHash` is the approve/reject tx). An approve the fund can no longer cover is `422 { "error": "contract rejected: insufficient fund balance: ..." }` and the hold stays `held`. An approve whose `ft_transfer` is rolled back is `422` and is not recorded as paid.
+`POST /api/holds/:billId/approve` and `POST /api/holds/:billId/reject` — treasurer path. Both require the request header `X-OpenLid-Approval` to equal the API's `OPENLID_APPROVAL_SECRET` (constant-time compare of SHA-256 digests), checked before any contract call. Missing or wrong header: `401 { "error": "missing or invalid X-OpenLid-Approval header" }`. Secret unset or empty: `503 { "error": "approval secret not configured: ..." }` (fail closed; the API still starts and every other route works). No other route needs the header, and the agent is never given the secret. The treasurer page sends it from `VITE_OPENLID_APPROVAL_SECRET`, so this is a local demo control, not wallet signing. In the demo these call the contract as `owner`. The owner key, if used at all, is a local file path in env, never committed. Returns `{ billId, status, hold, txHash }` (`hold` is a `HoldRow`, with `fund`; `txHash` is the approve/reject tx). An approve the fund can no longer cover is `422 { "error": "contract rejected: insufficient fund balance: ..." }` and the hold stays `held`. An approve whose `ft_transfer` is rolled back is `422` and is not recorded as paid.
 
 ### Treasurer export and summary
 
@@ -313,7 +313,7 @@ Treasurer page against the HTTP API:
 
 1. This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.
 2. This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.
-3. In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.
+3. In this demo, approve/reject is checked only by a shared approval secret (not wallet signing) and the server signs as owner; production would be a hardware wallet or multisig.
 4. This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.
 5. Gifts of USDC or other digital assets are noncash property, not cash. Amounts shown are book value at receipt (church books only, as of the date and time received), not a deductible value. This is not a noncash acknowledgment and does not state fair market value; Forms 8283 and 8282 and any appraisal are out of scope and are the donor's or church's later tax job if they apply. A CPA must confirm current rules.
 6. OpenLid never holds or moves donor funds for someone else: gifts go to a treasury the church controls. A legal review is required before any real money. This demo is testnet only; no real funds.

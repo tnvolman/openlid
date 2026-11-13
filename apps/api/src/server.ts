@@ -76,7 +76,13 @@ const app = createApp({
   oneClick,
   contractId: config.contractId,
   usdcTokenId: config.usdcTokenId,
+  approvalSecret: config.approvalSecret,
 });
+
+if (!config.approvalSecret) {
+  // Names the variable only. The API still starts so gifts and agent payout requests keep working.
+  console.warn('WARNING: OPENLID_APPROVAL_SECRET is not set; hold approve/reject will return 503 until it is.');
+}
 
 // Host only (no path or query, in case a provider URL ever carries a token).
 const rpcHost = (() => {

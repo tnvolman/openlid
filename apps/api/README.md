@@ -22,7 +22,7 @@ npm start           # binds 127.0.0.1:8787 by default
 
 Put your settings in a private `.env` (never committed) and export them, e.g. `set -a; . ../../.env; set +a; npm start`.
 
-CORS allows `http://127.0.0.1:5173` and `http://localhost:5173` (the Vite UI).
+CORS allows `http://127.0.0.1:5173` and `http://localhost:5173` (the Vite UI), with the `Content-Type` and `X-OpenLid-Approval` request headers.
 
 ## Environment (names only)
 
@@ -42,6 +42,7 @@ CORS allows `http://127.0.0.1:5173` and `http://localhost:5173` (the Vite UI).
 | `ONECLICK_DRY_RUN` | Must be `true` or unset. Any other value refuses to start, because this build has no non-dry path. |
 | `OPENLID_DATA_DIR` | Where `gifts.json` / `payouts.json` are stored (default `./data`, gitignored). |
 | `OPENLID_API_HOST`, `OPENLID_API_PORT` | Bind address, default `127.0.0.1` / `8787`. |
+| `OPENLID_APPROVAL_SECRET` | Treasurer approval secret. Approve and reject require it in the `X-OpenLid-Approval` header. Unset or empty: approve and reject return `503`, everything else still works, and the API logs one startup warning naming the variable. Never logged or returned. `scripts/demo.sh` generates one in `.demo-keys/approval.env`. |
 
 If the contract, agent account, or agent key file is missing, the gift endpoints still work. Payout and hold endpoints return `503`, and `/api/summary` reports `holds.available: false`.
 
@@ -55,6 +56,19 @@ The key file can be a NEAR CLI credentials JSON (`{"account_id","public_key","pr
 
 The agent key is never used for `approve_hold` / `reject_hold`. Those are treasurer (owner) actions, signed only with `OPENLID_OWNER_KEY_FILE` if configured. Otherwise they return `503`, and the treasurer signs from their own wallet.
 
+### Treasurer approval secret (approve / reject only)
+
+`POST /api/holds/:billId/approve` and `/reject` require the header `X-OpenLid-Approval` to match `OPENLID_APPROVAL_SECRET`. The check runs before any contract call:
+
+- Missing or wrong header: `401 { "error": "missing or invalid X-OpenLid-Approval header" }`.
+- `OPENLID_APPROVAL_SECRET` unset or empty: `503 { "error": "approval secret not configured: set OPENLID_APPROVAL_SECRET on the API" }`. This fails closed on purpose: the server still starts, so gifts and the agent's payout requests keep working, but no hold can be approved or rejected through the API until a secret is set.
+
+The comparison hashes both values with SHA-256 and compares the digests with `crypto.timingSafeEqual`, so it is constant-time for any header length. Neither the secret nor the supplied header appears in any response or log.
+
+No other route reads or needs the header. The agent is never given the secret: it uses `POST /api/payouts/request`, which works without it.
+
+This is a shared secret for a local demo, not wallet signing. The treasurer page sends it from `VITE_OPENLID_APPROVAL_SECRET`, so anything that can read the page's build or env can read it. Keep the API bound to `127.0.0.1`. In real use, approve and reject are signed by the treasurer's hardware wallet or multisig, not by this server.
+
 ## Endpoints
 
 | Method | Path | Notes |
@@ -67,13 +81,13 @@ The agent key is never used for `approve_hold` / `reject_hold`. Those are treasu
 | POST | `/api/payouts/request` | `{ vendor, amount, billId, memo, fund }` → `{ billId, status: "paid"|"held", vendor, amount, fund, requestedAt, txHash }`. `fund` is required (`general`/`missions`/`building`, else `400`). A contract panic, e.g. `insufficient fund balance: building has 0 available, bill needs 50000000`, returns `422 { error }`. |
 | GET | `/api/payouts` | `{ payouts: PayoutRow[] }`, paid payouts submitted through this API: the contract view (`bill_id, vendor, amount, memo, fund, status`) plus `requestedAt`, `paidAt`, `paymentTxHash` (the paying tx: `request_payout` for auto-pay, `approve_hold` for a hold) and `requestTxHash`. |
 | GET | `/api/holds[?status=held|approved|rejected]` | `{ holds: HoldRow[] }` from contract `list_holds` (with `fund`), plus `requestedAt`, `requestTxHash`, and once approved `paidAt` / `paymentTxHash` from this API's records. |
-| POST | `/api/holds/:billId/approve`, `/reject` | Treasurer path (owner key). |
+| POST | `/api/holds/:billId/approve`, `/reject` | Treasurer path (owner key). Requires `X-OpenLid-Approval: <OPENLID_APPROVAL_SECRET>`: `401` if missing or wrong, `503` if the secret is not configured. |
 | GET | `/api/summary` | `giftsByFund.{general,missions,building}` = `{ restriction, count, received, paidOut, held, available }` (`available = received - paidOut - held`, uncommitted; `restriction` is `with donor restrictions` for missions/building, `without donor restrictions` for general), `treasuryBalance`, `reconciliation` (`{ cash, ledgerTotal, ledgerSource, difference, status: match|mismatch|unknown }`, cash vs the on-chain fund ledgers), paid payouts, outstanding holds, `receiptNote`. |
 | GET | `/api/export.csv` | Three `#` comment lines (`demo, not a tax document`, not an IRS Pub 1771 acknowledgment, not GAAP statements / audit), then one table with a `type` column (`gift` / `payout`), `fund` and `restriction` on every row, `created_at`, `paid_at`, `payment_ref` (settlement or payment tx), `request_ref`; then a per-fund reconciliation section (`fund,restriction,gifts,received,paid,held,available`) and a cash-vs-ledgers line. Cells starting with `= + - @` are prefixed with `'` so spreadsheets don't run them as formulas. |
 
 Status mapping: `PENDING_DEPOSIT`→`pending_deposit`; `KNOWN_DEPOSIT_TX`, `PROCESSING`, `INCOMPLETE_DEPOSIT`→`processing`; `SUCCESS`→`settled`; `REFUNDED`→`refunded`; `FAILED`→`failed`.
 
-Errors are always `{ "error": "..." }`: `400` validation, `403` settlement refused (not testnet), `404` not found, `409` reused deposit address, duplicate `billId`, or gift not settleable, `422` contract rejection, `502` 1Click failure, `503` not configured.
+Errors are always `{ "error": "..." }`: `400` validation, `403` settlement refused (not testnet), `404` not found, `409` reused deposit address, duplicate `billId`, or gift not settleable, `401` missing or wrong `X-OpenLid-Approval` (approve/reject only), `422` contract rejection, `502` 1Click failure, `503` not configured (including approve/reject with no `OPENLID_APPROVAL_SECRET`).
 
 ## Gift rules
 

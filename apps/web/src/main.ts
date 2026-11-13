@@ -1,6 +1,6 @@
 import { createApi } from "./api.ts";
 import type { Api } from "./api.ts";
-import { isMockMode, resolveApiBase } from "./config.ts";
+import { isMockMode, resolveApiBase, resolveApprovalSecret } from "./config.ts";
 import { triggerCsvDownload } from "./csv.ts";
 import { createMockFetch } from "./fixtures.ts";
 import { load, showError, type PageEls } from "./load.ts";
@@ -12,7 +12,9 @@ const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const mock = isMockMode(location.search);
 const mockFetch = mock ? createMockFetch() : undefined;
 const base = mock ? "" : resolveApiBase(location.search, import.meta.env.VITE_OPENLID_API_BASE);
-const api: Api = createApi(base, mockFetch);
+// Mock mode needs no secret; the in-memory fixture does not check it.
+const approvalSecret = mock ? undefined : resolveApprovalSecret(import.meta.env.VITE_OPENLID_APPROVAL_SECRET);
+const api: Api = createApi(base, mockFetch, { approvalSecret });
 
 $("api-base").textContent = mock ? "(in-memory fixture)" : base || "same origin (/api via Vite proxy)";
 $("mode-badge").hidden = !mock;

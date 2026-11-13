@@ -13,7 +13,10 @@
 #      sub-accounts. Keys are generated locally into .demo-keys/ (gitignored)
 #      and never printed. Deploy the treasury and test-FT wasm if built.
 #      If faucet or deploy cannot run, stop here and say why. Nothing is faked.
-#   3. Start apps/api with .demo-keys/demo.env (ids and key-file paths only),
+#   3. Create the treasurer approval secret if absent: 32 random bytes (hex)
+#      in .demo-keys/approval.env (mode 600, gitignored, never printed; not in
+#      demo.env). Start apps/api with .demo-keys/demo.env (ids and key-file
+#      paths only) plus OPENLID_APPROVAL_SECRET from approval.env,
 #      ONECLICK_API_KEY unset and ONECLICK_DRY_RUN=true.
 #   4. POST /api/gifts/quote (dry-run, missions fund), then
 #      POST /api/gifts/:id/simulate-settlement for that gift: mints tUSDC into
@@ -23,7 +26,11 @@
 #      over the per-bill limit (expected: held) via POST /api/payouts/request,
 #      both from the missions fund ("fund":"missions"). The contract only pays
 #      a bill from its own fund's balance.
-#   6. Start the treasurer page on http://127.0.0.1:5173.
+#      The treasurer approves the held bill with the X-OpenLid-Approval
+#      header (the agent's payout requests never carry it).
+#   6. Start the treasurer page on http://127.0.0.1:5173 with
+#      VITE_OPENLID_APPROVAL_SECRET from approval.env, so its approve/reject
+#      calls send the header. This is a local demo control, not real auth.
 #
 # Prerequisites: Node >= 22.18, npm, curl, git; internet access to a NEAR
 # testnet RPC (default rpc.testnet.fastnear.com; override with
@@ -44,8 +51,9 @@
 #   DEMO_GIFT_AMOUNT      default 600000000  (tUSDC minted and credited to the missions fund; must cover both bills)
 #   DEMO_ORIGIN_ASSET     default nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near
 #
-# Key safety: this script never prints key material and never sources the
-# repo .env. It reads only the OPENLID_NETWORK line of .env to block mainnet.
+# Key safety: this script never prints key material or the approval secret
+# and never sources the repo .env. It reads only the OPENLID_NETWORK line of
+# .env to block mainnet. Delete .demo-keys/approval.env to rotate the secret.
 
 set -euo pipefail
 
@@ -64,7 +72,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-ui) NO_UI=1 ;;
     --once) ONCE=1; NO_UI=1 ;;
-    -h|--help) sed -n '2,47p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,56p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -128,7 +136,18 @@ DEMO_ENV="$KEYS_DIR/demo.env"
 [[ -f "$DEMO_ENV" ]] || die "missing $DEMO_ENV"
 DEMO_VENDOR="$(grep -E '^DEMO_VENDOR=' "$DEMO_ENV" | cut -d= -f2-)"
 
-# --- 3. API --------------------------------------------------------------
+# --- 3. approval secret, then API ---------------------------------------------
+# Treasurer approval secret for approve/reject (X-OpenLid-Approval). Kept out of
+# demo.env (setup.mjs owns that file) in its own mode-600 file. Never printed.
+APPROVAL_ENV="$KEYS_DIR/approval.env"
+if [[ ! -s "$APPROVAL_ENV" ]]; then
+  ( umask 077
+    node -e 'process.stdout.write("OPENLID_APPROVAL_SECRET="+require("node:crypto").randomBytes(32).toString("hex")+"\n")' >"$APPROVAL_ENV" )
+fi
+chmod 600 "$APPROVAL_ENV"
+APPROVAL_SECRET="$(grep -E '^OPENLID_APPROVAL_SECRET=' "$APPROVAL_ENV" | tail -1 | cut -d= -f2-)"
+[[ "$APPROVAL_SECRET" =~ ^[0-9a-f]{64}$ ]] || die "$APPROVAL_ENV is malformed; delete it and re-run to generate a new approval secret"
+
 if curl -sf "$API_URL/api/summary" >/dev/null 2>&1; then
   die "Something is already listening on $API_URL. Stop it so the demo can start the API
 with the testnet config (dry-run 1Click, no API key)."
@@ -144,7 +163,7 @@ say "Starting API from apps/api (log: tmp/demo-api.log)"
   . "$DEMO_ENV"
   set +a
   unset ONECLICK_API_KEY # $0 demo: never call the paid live 1Click endpoint
-  export ONECLICK_DRY_RUN=true OPENLID_NETWORK=testnet
+  export ONECLICK_DRY_RUN=true OPENLID_NETWORK=testnet OPENLID_APPROVAL_SECRET="$APPROVAL_SECRET"
   cd "$ROOT/apps/api"
   [[ -d node_modules ]] || npm install --no-audit --no-fund
   if node -e 'process.exit(require("./package.json").scripts?.start ? 0 : 1)'; then exec npm start; else exec npm run dev; fi
@@ -153,6 +172,9 @@ PIDS+=("$!")
 wait_for "$API_URL/api/summary" 60 || { tail -n 30 "$LOG_DIR/demo-api.log" >&2; die "API did not come up at $API_URL"; }
 
 post() { curl -s -w '\n%{http_code}' -X POST -H 'content-type: application/json' --data "$2" "$API_URL$1"; }
+# Treasurer-only POST: the approval header goes in on stdin (-H @-), so the
+# secret is not on any command line and is never echoed.
+post_treasurer() { printf 'X-OpenLid-Approval: %s\n' "$APPROVAL_SECRET" | curl -s -w '\n%{http_code}' -X POST -H 'content-type: application/json' -H @- --data "$2" "$API_URL$1"; }
 split() { CODE="${1##*$'\n'}"; BODY="${1%$'\n'*}"; }
 
 # --- 4. dry-run quote + simulated settlement ----------------------------------
@@ -200,7 +222,7 @@ echo "    Held bills: $(curl -s "$API_URL/api/holds?status=held")"
 approve_ok=0
 if [[ $bills_ok -eq 1 ]]; then
   say "Treasurer approves the held bill $HOLD_BILL (owner / treasurer key, not the agent)"
-  split "$(post "/api/holds/$HOLD_BILL/approve" '{}')"
+  split "$(post_treasurer "/api/holds/$HOLD_BILL/approve" '{}')"
   echo "    HTTP $CODE $BODY"
   if [[ "$CODE" == 2* && "$(jget status <<<"$BODY")" == "approved" ]]; then
     approve_ok=1
@@ -214,7 +236,7 @@ if [[ $NO_UI -eq 0 ]]; then
   say "Starting treasurer page (log: tmp/demo-web.log)"
   ( cd "$ROOT/apps/web"
     [[ -d node_modules ]] || npm install --no-audit --no-fund
-    OPENLID_API_URL="$API_URL" exec npx vite --host 127.0.0.1 --port 5173 --strictPort
+    OPENLID_API_URL="$API_URL" VITE_OPENLID_APPROVAL_SECRET="$APPROVAL_SECRET" exec npx vite --host 127.0.0.1 --port 5173 --strictPort
   ) >"$LOG_DIR/demo-web.log" 2>&1 &
   PIDS+=("$!")
   wait_for "http://127.0.0.1:5173/" 60 || { tail -n 30 "$LOG_DIR/demo-web.log" >&2; die "UI did not start"; }

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { createApi } from "./api.ts";
-import { DEFAULT_API_BASE, isMockMode, resolveApiBase } from "./config.ts";
+import { APPROVAL_HEADER, createApi } from "./api.ts";
+import { DEFAULT_API_BASE, isMockMode, resolveApiBase, resolveApprovalSecret } from "./config.ts";
 import { CSV_FILENAME, triggerCsvDownload } from "./csv.ts";
 import { createMockFetch, fixtureState, summarize } from "./fixtures.ts";
 import { formatDate, formatFund, formatTime, formatUsdc, formatUsdcPrecise, friendlyError, groupGiftsByFund } from "./format.ts";
@@ -119,6 +119,70 @@ describe("holds", () => {
     const api = createApi("", createMockFetch());
     await api.rejectHold("bill-roof-002");
     await assert.rejects(api.approveHold("bill-roof-002"), /is rejected/);
+  });
+});
+
+describe("treasurer approval header", () => {
+  const SECRET = "test-approval-value-not-real";
+  const recorder = () => {
+    const seen: Array<{ call: string; approval: string | null }> = [];
+    const rec = async (url: string, init?: RequestInit) => {
+      seen.push({ call: `${init?.method ?? "GET"} ${url}`, approval: new Headers(init?.headers).get(APPROVAL_HEADER) });
+      const body = url.includes("/holds/") ? {} : { gifts: [], payouts: [], holds: [] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    };
+    return { seen, rec };
+  };
+
+  it("approve/reject send X-OpenLid-Approval when configured; no other call does", async () => {
+    const { seen, rec } = recorder();
+    const api = createApi("", rec, { approvalSecret: SECRET });
+    await api.summary();
+    await api.gifts();
+    await api.payouts();
+    await api.heldHolds();
+    await api.approveHold("b1");
+    await api.rejectHold("b2");
+    assert.deepEqual(seen, [
+      { call: "GET /api/summary", approval: null },
+      { call: "GET /api/gifts", approval: null },
+      { call: "GET /api/payouts", approval: null },
+      { call: "GET /api/holds?status=held", approval: null },
+      { call: "POST /api/holds/b1/approve", approval: SECRET },
+      { call: "POST /api/holds/b2/reject", approval: SECRET },
+    ]);
+    assert.ok(!api.exportCsvUrl.includes(SECRET));
+  });
+
+  it("unset: no header is sent, and the API's 401/503 error surfaces plainly", async () => {
+    const { seen, rec } = recorder();
+    await createApi("", rec).approveHold("b1");
+    assert.equal(seen[0].approval, null);
+    const refuse = (status: number, error: string) => async () =>
+      new Response(JSON.stringify({ error }), { status, headers: { "content-type": "application/json" } });
+    await assert.rejects(
+      createApi("", refuse(503, "approval secret not configured: set OPENLID_APPROVAL_SECRET on the API")).approveHold("b1"),
+      (err: Error & { status?: number }) => err.status === 503 && /approval secret not configured/.test(err.message),
+    );
+    await assert.rejects(
+      createApi("", refuse(401, "missing or invalid X-OpenLid-Approval header")).rejectHold("b1"),
+      (err: Error & { status?: number }) => err.status === 401 && /X-OpenLid-Approval/.test(err.message),
+    );
+  });
+
+  it("resolveApprovalSecret: blank means unset", () => {
+    assert.equal(resolveApprovalSecret(undefined), undefined);
+    assert.equal(resolveApprovalSecret(""), undefined);
+    assert.equal(resolveApprovalSecret("  "), undefined);
+    assert.equal(resolveApprovalSecret(" abc "), "abc");
+  });
+
+  it("mock mode keeps working with or without a secret", async () => {
+    for (const opts of [{}, { approvalSecret: SECRET }]) {
+      const api = createApi("", createMockFetch(), opts);
+      await api.approveHold("bill-roof-002");
+      assert.equal((await api.heldHolds()).length, 0);
+    }
   });
 });
 
@@ -307,7 +371,7 @@ describe("boundary lines (C3 / D2 / D3 / D4)", () => {
     for (const line of BOUNDARY_LINES) assert.ok(html.includes(`<li>${line}</li>`), line);
     assert.match(BOUNDARY_LINES[0], /IRS Publication 1771/);
     assert.match(BOUNDARY_LINES[1], /not GAAP financial statements and not an audit, review, or compilation/);
-    assert.match(BOUNDARY_LINES[2], /unauthenticated and the server signs as owner/);
+    assert.match(BOUNDARY_LINES[2], /checked only by a shared approval secret \(not wallet signing\) and the server signs as owner/);
     assert.match(BOUNDARY_LINES[3], /does not cover interfund transfers, budgets, pledges, or tax receipts/);
     assert.ok(html.includes(">demo, not a tax document<"));
     assert.ok(html.includes(TESTNET_NOTICE));

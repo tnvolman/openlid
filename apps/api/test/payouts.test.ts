@@ -7,7 +7,7 @@ import { createApp } from '../src/app.js';
 import { classifyNearError, ContractRejectedError, loadKeyFromFile, NearUnavailableError, resolveKeyFile, UnconfiguredNearClient } from '../src/near.js';
 import { HttpOneClickClient } from '../src/oneclick.js';
 import { BOUNDARY_NO_CUSTODY, BOUNDARY_NONCASH } from '../src/types.js';
-import { giftBody, makeHarness } from './helpers.js';
+import { APPROVAL, giftBody, makeHarness } from './helpers.js';
 
 const VENDOR = 'roofer.testnet';
 
@@ -158,7 +158,7 @@ describe('payouts and holds', () => {
       assert.equal(r.json.status, 'held');
       assert.equal(r.json.fund, 'building');
     }
-    const approve = await h.request('POST', '/api/holds/hold-a/approve');
+    const approve = await h.request('POST', '/api/holds/hold-a/approve', undefined, APPROVAL);
     assert.equal(approve.status, 200, approve.text);
     assert.equal(approve.json.status, 'approved');
     assert.equal(approve.json.hold.fund, 'building');
@@ -166,11 +166,11 @@ describe('payouts and holds', () => {
     assert.equal(approve.json.hold.paymentTxHash, 'fake-near-tx-3');
     assert.ok(approve.json.hold.paidAt);
 
-    const reject = await h.request('POST', '/api/holds/hold-b/reject');
+    const reject = await h.request('POST', '/api/holds/hold-b/reject', undefined, APPROVAL);
     assert.equal(reject.status, 200);
     assert.equal(reject.json.status, 'rejected');
 
-    const again = await h.request('POST', '/api/holds/hold-b/approve');
+    const again = await h.request('POST', '/api/holds/hold-b/approve', undefined, APPROVAL);
     assert.equal(again.status, 422);
     assert.match(again.json.error, /not held/);
 
@@ -356,7 +356,7 @@ describe('per-fund accounting', () => {
     });
 
     // Approving converts the reservation; it does not need the money twice.
-    const ok = await h.request('POST', '/api/holds/roof/approve');
+    const ok = await h.request('POST', '/api/holds/roof/approve', undefined, APPROVAL);
     assert.equal(ok.status, 200, ok.text);
     assert.equal(h.treasury.available('building'), 50000000n);
     assert.deepEqual(h.treasury.ledger.get('building'), { received: 250000000n, paid: 200000000n, held: 0n });
@@ -366,7 +366,7 @@ describe('per-fund accounting', () => {
     await h.fundGift('building', '200000000');
     await bill('roof', '200000000', 'building');
     assert.equal((await bill('nails', '1', 'building')).status, 422);
-    assert.equal((await h.request('POST', '/api/holds/roof/reject')).status, 200);
+    assert.equal((await h.request('POST', '/api/holds/roof/reject', undefined, APPROVAL)).status, 200);
     assert.equal(h.treasury.available('building'), 200000000n);
     assert.equal((await bill('nails', '1', 'building')).json.status, 'paid');
     const s = (await h.request('GET', '/api/summary')).json;
@@ -380,7 +380,7 @@ describe('per-fund accounting', () => {
     // (e.g. another client) to prove the approve path re-checks and reports it clearly.
     h.treasury.ledger.get('building')!.paid += 90000000n;
 
-    const r = await h.request('POST', '/api/holds/roof/approve');
+    const r = await h.request('POST', '/api/holds/roof/approve', undefined, APPROVAL);
     assert.equal(r.status, 422, r.text);
     assert.deepEqual(Object.keys(r.json), ['error']);
     assert.match(r.json.error, /insufficient fund balance: building has 160000000 available, bill needs 200000000/);
@@ -403,7 +403,7 @@ describe('per-fund accounting', () => {
     assert.equal((await bill('big', '110000000', 'building')).status, 422, 'would over-commit building');
     await h.fundGift('building', '110000000');
     assert.equal((await bill('big', '110000000', 'building')).json.status, 'held');
-    assert.equal((await h.request('POST', '/api/holds/big/reject')).status, 200);
+    assert.equal((await h.request('POST', '/api/holds/big/reject', undefined, APPROVAL)).status, 200);
 
     const s = (await h.request('GET', '/api/summary')).json;
     assert.deepEqual(s.giftsByFund, {
@@ -438,7 +438,7 @@ describe('per-fund accounting', () => {
     await h.fundGift('general', '200000000');
     await bill('roof', '150000000', 'general');
     h.treasury.failNextTransfer = true;
-    const r = await h.request('POST', '/api/holds/roof/approve');
+    const r = await h.request('POST', '/api/holds/roof/approve', undefined, APPROVAL);
     assert.equal(r.status, 422);
     assert.match(r.json.error, /rolled back/);
     assert.equal(h.store.getPayout('roof')!.status, 'held');

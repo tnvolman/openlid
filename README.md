@@ -24,8 +24,8 @@ The author also entered Onhire, an independent project, in this hackathon: https
   - a 24-hour timelock on allowlist changes
   - per-fund balances: every bill names a fund (`general`, `missions`, or `building`) and is paid only if that fund's uncommitted `available = received - paid - held` covers it. Outstanding holds reserve their amount, so two holds cannot commit the same money. A missions gift cannot pay a building bill.
 - **Fund labels.** In current US GAAP wording, `missions` and `building` are **with donor restrictions** and `general` is **without donor restrictions**. That is a label, not a permission: all three funds are siloed, and `general` cannot pay a missions or building bill. Doing that on purpose would be an interfund transfer, which is not built (see [Does not cover](#does-not-cover-yet)). There are no board-designated set-asides, and nothing is called "restricted" that the donor did not restrict.
-- **Agent.** The agent has only a restricted function-call access key, and that key can call only `request_payout`. It cannot pay an unknown vendor, go over the cap, skip a hold, or spend one fund's gifts on another fund's bill.
-- **Holds.** A bill to an allowlisted vendor that is over the per-bill limit is held for the church treasurer. In real use the treasurer is a hardware wallet or a multisig. The treasurer approves or rejects the bill.
+- **Agent.** The agent has only a restricted function-call access key, and that key can call only `request_payout`. On-chain it cannot pay an unknown vendor, go over the cap, skip a hold, or spend one fund's gifts on another fund's bill: approving a hold is an owner-only contract method the agent's key cannot call. In the local API, approving or rejecting a hold also needs the treasurer's approval secret (`X-OpenLid-Approval`), which the agent is never given; the agent's own endpoint, `POST /api/payouts/request`, does not take it. The API is meant to run on `127.0.0.1` only. The secret is a shared value in a local demo, not wallet signing (see [Known issues](#known-issues)).
+- **Holds.** A bill to an allowlisted vendor that is over the per-bill limit is held for the church treasurer. In real use the treasurer is a hardware wallet or a multisig. The treasurer approves or rejects the bill. The hold only looks at one bill at a time; see [Known issues](#known-issues) for split bills.
 
 ## Repository layout
 
@@ -108,7 +108,7 @@ Allowlist changes go through `propose_allowlist_change`, which only the owner ca
 ### Treasurer page (`apps/web`)
 
 - The notice: NEAR testnet only, dry-run quote plus simulated settlement.
-- Six boundary lines, always visible: not an IRS Publication 1771 acknowledgment or giving statement; not GAAP financial statements or an audit, review, or compilation (testnet only, no real funds); approve/reject is unauthenticated in this demo and the server signs as owner; the demo covers fund-tagged gifts and bills, not interfund transfers, budgets, pledges, or tax receipts; USDC and other digital-asset gifts are noncash property and every amount is **book value at receipt** (church books only), not a deductible value, with no FMV acknowledgment and Forms 8283/8282 and appraisals out of scope (a CPA must confirm current rules); OpenLid never holds or moves donor funds for someone else, gifts go to a treasury the church controls, and a legal review is required before any real money.
+- Six boundary lines, always visible: not an IRS Publication 1771 acknowledgment or giving statement; not GAAP financial statements or an audit, review, or compilation (testnet only, no real funds); approve/reject is checked only by a shared approval secret in this demo (not wallet signing) and the server signs as owner; the demo covers fund-tagged gifts and bills, not interfund transfers, budgets, pledges, or tax receipts; USDC and other digital-asset gifts are noncash property and every amount is **book value at receipt** (church books only), not a deductible value, with no FMV acknowledgment and Forms 8283/8282 and appraisals out of scope (a CPA must confirm current rules); OpenLid never holds or moves donor funds for someone else, gifts go to a treasury the church controls, and a legal review is required before any real money.
 - Every amount table is captioned "book value at receipt (church books only), not a deductible value".
 - Summary, from `GET /api/summary`: the live on-chain treasury balance next to the **sum of fund ledgers** (received − paid), with a visible **match / mismatch** flag; then a table per fund with **Restriction**, **Gifts** (settled count), **Received**, **Paid out**, **Held**, and **Available** (uncommitted: received − paid out − held).
 - Outstanding holds, from `GET /api/holds?status=held`, with **Fund**, **Requested** time, the request tx reference, and **Approve** / **Reject** buttons.
@@ -122,6 +122,7 @@ The API base is `http://127.0.0.1:8787` by default. To change it:
 - Add `?api=http://host:port` to the page URL, or set `VITE_OPENLID_API_BASE` at dev or build time.
 - Use `?api=same-origin` to send requests through the Vite dev proxy instead. The proxy target is `OPENLID_API_URL`.
 - Use `?mock=1` to show the built-in fixture with no API. The fixture uses dry-run gifts with `sim:` addresses.
+- Set `VITE_OPENLID_APPROVAL_SECRET` to the API's `OPENLID_APPROVAL_SECRET` so the Approve and Reject buttons send it as `X-OpenLid-Approval`. No other request sends it. If it is unset, approve and reject show the API's error (`401` or `503`) on the page.
 
 ## Running the testnet demo
 
@@ -142,13 +143,15 @@ What `scripts/demo.sh` does, in order:
    - Replaces the agent's bootstrap key with a single function-call key for `request_payout`.
    - Proposes adding the vendor to the allowlist.
    - Writes `.demo-keys/demo.env`, which holds account ids and key-file paths only.
-4. Starts `apps/api` with that config, `ONECLICK_API_KEY` unset, and `ONECLICK_DRY_RUN=true`.
-5. Asks for one dry-run gift quote. It stops unless the response has `quoteMode: "dry_run"` and a `sim:` address.
-6. Calls `POST /api/gifts/:id/simulate-settlement`, which mints 600 tUSDC into the treasury and credits it to the **missions** fund (`credit_fund`).
-7. Sends two bills through `POST /api/payouts/request`, both with `"fund":"missions"` (50 + 500 = 550, covered by the 600 tUSDC gift):
+4. Creates a random treasurer approval secret in `.demo-keys/approval.env` (mode 600, gitignored) if there is none yet. It is kept out of `demo.env` and never printed. Delete the file to rotate it.
+5. Starts `apps/api` with that config plus `OPENLID_APPROVAL_SECRET`, `ONECLICK_API_KEY` unset, and `ONECLICK_DRY_RUN=true`.
+6. Asks for one dry-run gift quote. It stops unless the response has `quoteMode: "dry_run"` and a `sim:` address.
+7. Calls `POST /api/gifts/:id/simulate-settlement`, which mints 600 tUSDC into the treasury and credits it to the **missions** fund (`credit_fund`).
+8. Sends two bills through `POST /api/payouts/request`, both with `"fund":"missions"` (50 + 500 = 550, covered by the 600 tUSDC gift):
    - 50 tUSDC, which should be **paid**
    - 500 tUSDC, which should be **held** for the treasurer
-8. Starts the treasurer page on <http://127.0.0.1:5173>.
+9. With `--once`, approves the held bill as the treasurer, sending `X-OpenLid-Approval`.
+10. Otherwise starts the treasurer page on <http://127.0.0.1:5173> with `VITE_OPENLID_APPROVAL_SECRET` set, so its Approve and Reject buttons work.
 
 If the faucet or the contract deploy cannot run, the script stops and says so. It does not fake a testnet receipt.
 
@@ -177,7 +180,7 @@ The web tests use the in-memory fixture. They check:
 
 - grouping by fund, with refunded and failed gifts kept
 - that fixture gifts are dry-run quotes with unique `sim:` addresses, tagged **simulated** on the page
-- that approve and reject call `POST /api/holds/:billId/approve|reject`
+- that approve and reject call `POST /api/holds/:billId/approve|reject`, and that only those two calls send `X-OpenLid-Approval`
 - the per-fund summary table (Restriction, Gifts, Received, Paid out, Held, Available), restriction wording that never says general can pay any bill, the cash-vs-ledger match and mismatch flag, fund / date / reference columns on payouts and holds, and a clear message when a fund cannot cover an approval
 - the six boundary lines on the page (including noncash property / book value at receipt, not a deductible value, and no custody / legal review before real money), the book-value caption on every amount table, no "tax deduction" wording, and the matching lines in the CSV header
 - that the CSV button points at `/api/export.csv`
@@ -201,7 +204,13 @@ The web tests use the in-memory fixture. They check:
 - **NEAR sandbox.** `near-workspaces` sandbox tests may not be in this tree. Contract coverage is `near-sdk` unit tests.
 - **CORS.** The page calls the API cross-origin, from `:5173` to `:8787`. If the API does not send CORS headers, use `?api=same-origin`, which goes through the Vite proxy.
 - **CSV download.** The download goes to the API's URL. Whether the browser saves the file or shows it depends on the API's `Content-Disposition` header.
-- **No authentication on the treasurer page.** In the demo, the API holds the owner key path. In real use, approve and reject would be signed by the treasurer's hardware wallet or multisig, not by the server.
+- **The treasurer approval secret is a demo control, not real authentication.** Approve and reject require an `X-OpenLid-Approval` header that matches `OPENLID_APPROVAL_SECRET`. If that variable is unset, they return `503`; a missing or wrong header gets `401`. The treasurer page sends the header from `VITE_OPENLID_APPROVAL_SECRET`, so the value lives in the page's local build, and anything that can read that build or its env can read it. In the demo the API also holds the owner key path. In real use, approve and reject are signed by the treasurer's hardware wallet or multisig, not by the server.
+
+### Policy and key gaps
+
+- **Split bills can bypass the per-bill hold.** The hold applies only when a single bill is over the per-bill limit. Several bills to the same vendor, each at or under the limit, are paid with no hold. Only the monthly cap (a calendar month, UTC) stops the total, and only if it goes over; each bill must also fit its fund's balance. There is no per-vendor or time-window limit.
+- **`set_limits` takes effect immediately, while allowlist changes wait 24 hours.** A stolen owner key can raise the per-bill limit at once and make new holds pointless. There is no cancel or veto for a pending allowlist change. The same owner key can only replace the proposal, which restarts the 24-hour wait.
+- **Owner methods do not require a 1-yoctoNEAR deposit.** `approve_hold`, `reject_hold`, `credit_fund`, `propose_allowlist_change`, and `set_limits` check only the caller. None is payable or requires 1 yoctoNEAR, so a function-call access key on the owner account could call them. The usual NEAR pattern, requiring 1 yoctoNEAR so only a full-access key (a wallet confirmation) can call, needs new contract code. The contract has no upgrade method, so that means a fresh treasury deploy, or a redeploy with the treasury account's own full-access key, which the demo keeps in `.demo-keys/`.
 
 ## Does not cover (yet)
 

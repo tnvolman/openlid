@@ -17,3 +17,13 @@ export function isMockMode(search: string): boolean {
   const v = new URLSearchParams(search).get("mock");
   return v === "1" || v === "true";
 }
+
+/**
+ * Treasurer approval secret (VITE_OPENLID_APPROVAL_SECRET), sent as `X-OpenLid-Approval` on approve/reject
+ * only. Blank means unset; the API then answers approve/reject with its own error (401 or 503). This is a
+ * local demo control: anything that can read this page's build or env can read the value.
+ */
+export function resolveApprovalSecret(envSecret: string | undefined): string | undefined {
+  const v = envSecret?.trim();
+  return v ? v : undefined;
+}

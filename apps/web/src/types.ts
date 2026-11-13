@@ -103,7 +103,7 @@ export const RECEIPT_NOTE = "demo, not a tax document";
 export const BOUNDARY_LINES = [
   "This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.",
   "This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.",
-  "In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.",
+  "In this demo, approve/reject is checked only by a shared approval secret (not wallet signing) and the server signs as owner; production would be a hardware wallet or multisig.",
   "This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.",
   // D9: noncash property; book value at receipt, not a deductible value.
   "Gifts of USDC or other digital assets are noncash property, not cash. Amounts shown are book value at receipt (church books only, as of the date and time received), not a deductible value. This is not a noncash acknowledgment and does not state fair market value; Forms 8283 and 8282 and any appraisal are out of scope and are the donor's or church's later tax job if they apply. A CPA must confirm current rules.",

@@ -25,6 +25,10 @@ import {
 } from '../src/types.js';
 
 export const TEST_API_KEY = 'test-1click-api-key-not-real';
+/** Test-only approval secret (not a real value). */
+export const TEST_APPROVAL_SECRET = 'test-approval-value-not-real-0123456789';
+/** Headers the treasurer page sends on approve/reject. */
+export const APPROVAL = { 'X-OpenLid-Approval': TEST_APPROVAL_SECRET };
 
 export interface RecordedCall {
   method: string;
@@ -269,7 +273,8 @@ export class FakeSettlement implements TestnetSettlement {
   }
 }
 
-export async function makeHarness(opts: { network?: string } = {}) {
+/** `approvalSecret: null` builds the app with no approval secret configured. */
+export async function makeHarness(opts: { network?: string; approvalSecret?: string | null } = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), 'openlid-api-test-'));
   const store = new JsonStore(dataDir);
   await store.init();
@@ -289,6 +294,7 @@ export async function makeHarness(opts: { network?: string } = {}) {
     network: opts.network ?? 'testnet',
     contractId: 'treasury.openlid.testnet',
     usdcTokenId: 'usdc.fakes.testnet',
+    approvalSecret: opts.approvalSecret === null ? undefined : (opts.approvalSecret ?? TEST_APPROVAL_SECRET),
   });
 
   const request = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {

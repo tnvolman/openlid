@@ -8,8 +8,8 @@ export const BOUNDARY_PUB_1771 =
   'This is not a contemporaneous written acknowledgment or year-end giving statement under IRS Publication 1771.' as const;
 export const BOUNDARY_NOT_GAAP =
   'This is not GAAP financial statements and not an audit, review, or compilation. Testnet only; no real funds.' as const;
-export const BOUNDARY_UNAUTHENTICATED =
-  'In this demo, approve/reject is unauthenticated and the server signs as owner; production would be a hardware wallet or multisig.' as const;
+export const BOUNDARY_APPROVAL =
+  'In this demo, approve/reject is checked only by a shared approval secret (not wallet signing) and the server signs as owner; production would be a hardware wallet or multisig.' as const;
 export const BOUNDARY_SCOPE =
   'This demo covers fund-tagged gifts and bills. It does not cover interfund transfers, budgets, pledges, or tax receipts.' as const;
 /** D9: digital-asset gifts are noncash property; USD/USDC figures are book value at receipt, never a deductible value. */

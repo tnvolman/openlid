@@ -10,8 +10,16 @@ export class ApiError extends Error {
   }
 }
 
+/** Header the API checks on approve/reject (and nowhere else). */
+export const APPROVAL_HEADER = "X-OpenLid-Approval";
+
+export interface ApiOptions {
+  /** Sent as X-OpenLid-Approval on approveHold/rejectHold only. Unset: the header is omitted. */
+  approvalSecret?: string;
+}
+
 /** Client for the OpenLid HTTP API. `base` has no trailing slash ("" = same origin). */
-export function createApi(base: string, fetchImpl: FetchLike = (i, init) => fetch(i, init)) {
+export function createApi(base: string, fetchImpl: FetchLike = (i, init) => fetch(i, init), opts: ApiOptions = {}) {
   const root = base.replace(/\/+$/, "");
 
   async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -34,7 +42,14 @@ export function createApi(base: string, fetchImpl: FetchLike = (i, init) => fetc
     return body as T;
   }
 
-  const post = { method: "POST", headers: { "content-type": "application/json" }, body: "{}" };
+  const treasurerPost = (): RequestInit => ({
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(opts.approvalSecret ? { [APPROVAL_HEADER]: opts.approvalSecret } : {}),
+    },
+    body: "{}",
+  });
 
   return {
     exportCsvUrl: `${root}/api/export.csv`,
@@ -43,9 +58,9 @@ export function createApi(base: string, fetchImpl: FetchLike = (i, init) => fetc
     payouts: async () => (await call<{ payouts: PayoutView[] }>("/api/payouts")).payouts,
     heldHolds: async () => (await call<{ holds: HoldView[] }>("/api/holds?status=held")).holds,
     approveHold: (billId: string) =>
-      call<unknown>(`/api/holds/${encodeURIComponent(billId)}/approve`, post),
+      call<unknown>(`/api/holds/${encodeURIComponent(billId)}/approve`, treasurerPost()),
     rejectHold: (billId: string) =>
-      call<unknown>(`/api/holds/${encodeURIComponent(billId)}/reject`, post),
+      call<unknown>(`/api/holds/${encodeURIComponent(billId)}/reject`, treasurerPost()),
   };
 }
 
