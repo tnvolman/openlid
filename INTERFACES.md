@@ -17,7 +17,7 @@ Do not edit a path you do not own. Do not push, open PRs, merge, deploy, or add 
 
 ## Accounts and keys
 
-- `owner` (treasurer): church-controlled NEAR account. In production a hardware wallet or multisig. Signs `approve_hold`, `reject_hold`, `credit_fund`, and allowlist proposals. Never an OpenLid-held key.
+- `owner` (treasurer): church-controlled NEAR account. In production a hardware wallet or multisig. Signs `approve_hold`, `reject_hold`, `credit_fund`, and allowlist proposals. In production, never an OpenLid-held key. In this demo the API holds the owner key file (`OPENLID_OWNER_KEY_FILE`).
 - `agent`: church-issued **function-call access key only**, limited to this contract and method `request_payout`. No seed, no full-access key, no implicit private key in repo, logs, or env examples.
 - `vendor`: allowlisted NEAR account that can receive payouts.
 - `usdc_token`: NEP-141 token account id. On the testnet demo this is a simple test FT (not mainnet USDC). Settlement destination is the treasury contract on the church's testnet account.
@@ -38,7 +38,7 @@ Michael approved a NEAR **testnet-only** demo at 12:45 AM ET on Nov 11, $0 spend
 - Settlement is **not** a cross-chain transfer. A testnet adapter mints or transfers a testnet USDC-like token (a simple test FT contract) into the church treasury contract, then marks the gift `settled`. The README and the demo must say plainly that the cross-chain leg is a dry-run quote plus a simulated settlement on testnet.
 - Testnet keys are generated locally at demo time into `OPENLID_DEMO_KEYS_DIR` (default `.demo-keys/`, gitignored). Nothing in that directory is committed. Key material is never printed to logs, stdout, or error messages (print paths and account ids only).
 - Licensed under Apache-2.0 (see `LICENSE` and `NOTICE`). The OpenLid name and logo are not licensed under Apache-2.0; see `TRADEMARK.md`.
-- The GitHub repository stays PRIVATE. Never change visibility.
+- Public for NEAR HACKATHON judging.
 
 ## Contract test FT (`contracts/test-ft`)
 
@@ -60,6 +60,8 @@ Rust `near-sdk` 5. Init once. Panic with a clear message on unauthorized callers
 
 ### Funds (per-fund ledger, enforced on-chain)
 
+Unit-tested (`cargo test`) and deployed on NEAR testnet at `treasury.openlid-demo-mwfrrslq.testnet`, with a recorded `insufficient fund balance` refusal: see [contracts/treasury/TESTNET-PROOF.md](contracts/treasury/TESTNET-PROOF.md). There are no `near-workspaces` sandbox tests.
+
 Every bill names exactly one fund: `general`, `missions`, or `building`. Any other string panics with `fund must be one of general, missions, building`. The contract keeps a ledger per fund:
 
 - `received`: increased only by the owner's `credit_fund`, once per settled gift.
@@ -67,7 +69,7 @@ Every bill names exactly one fund: `general`, `missions`, or `building`. Any oth
 - `held`: sum of outstanding (`held`) holds on the fund. **Holds reserve their amount**: a new hold adds to `held`; `approve_hold` moves the amount from `held` to `paid`; `reject_hold` releases it; a rolled-back approval puts it back in `held` (the hold is `held` again).
 - `available = received - paid - held`: the **uncommitted** balance (saturating, never negative).
 
-A bill (auto-pay **or** hold creation) with `amount > available` for its fund panics up front with `insufficient fund balance: <fund> has <available> available, bill needs <amount>`. Because holds reserve, a second hold (or a routine bill) that would commit the same money is refused immediately, not after a 20–30 s approval. `approve_hold` still re-checks (with the hold's own reservation set aside) as a guard, using the same message. A missions gift can never pay a building bill.
+A bill (auto-pay **or** hold creation) with `amount > available` for its fund panics up front with `insufficient fund balance: <fund> has <available> available, bill needs <amount>`. Because holds reserve, a second hold (or a routine bill) that would commit the same money is refused immediately, not after a 20–30 s approval. `approve_hold` still re-checks (with the hold's own reservation set aside) as a guard, using the same message. A building bill can spend only what the building ledger shows as available. Ledger credits are owner-entered and not checked against tokens received (`credit_fund`; see the README's Known issues).
 
 #### Restriction class labels (current US GAAP wording)
 
@@ -240,7 +242,7 @@ Gift `status` mapping (store OpenLid names, never guess a match by amount):
 
 `GET /api/holds?status=held` — `{ "holds": HoldRow[] }`: each the contract `HoldView` (with `fund`) plus `requestedAt`, `requestTxHash`, and, once approved, `paidAt` and `paymentTxHash`.
 
-`POST /api/holds/:billId/approve` and `POST /api/holds/:billId/reject` — treasurer path. Both require the request header `X-OpenLid-Approval` to equal the API's `OPENLID_APPROVAL_SECRET` (constant-time compare of SHA-256 digests), checked before any contract call. Missing or wrong header: `401 { "error": "missing or invalid X-OpenLid-Approval header" }`. Secret unset or empty: `503 { "error": "approval secret not configured: ..." }` (fail closed; the API still starts and every other route works). No other route needs the header, and the agent is never given the secret. The treasurer page sends it from `VITE_OPENLID_APPROVAL_SECRET`, so this is a local demo control, not wallet signing. In the demo these call the contract as `owner`. The owner key, if used at all, is a local file path in env, never committed. Returns `{ billId, status, hold, txHash }` (`hold` is a `HoldRow`, with `fund`; `txHash` is the approve/reject tx). An approve the fund can no longer cover is `422 { "error": "contract rejected: insufficient fund balance: ..." }` and the hold stays `held`. An approve whose `ft_transfer` is rolled back is `422` and is not recorded as paid.
+`POST /api/holds/:billId/approve` and `POST /api/holds/:billId/reject` — treasurer path. Both require the request header `X-OpenLid-Approval` to equal the API's `OPENLID_APPROVAL_SECRET` (constant-time compare of SHA-256 digests), checked before any contract call. Missing or wrong header: `401 { "error": "missing or invalid X-OpenLid-Approval header" }`. Secret unset or empty: `503 { "error": "approval secret not configured: ..." }` (fail closed; the API still starts and every other route works). No other route needs the header. The agent's endpoint does not take the secret, and the agent is not handed it. But the treasurer page sends it from `VITE_OPENLID_APPROVAL_SECRET`, which Vite inlines into the page bundle. Any program on the same machine that can read that bundle, `.demo-keys/approval.env`, or the API's environment can read it. So this is a local demo control, not a boundary, and not wallet signing. In the demo these call the contract as `owner`. The owner key, if used at all, is a local file path in env, never committed. Returns `{ billId, status, hold, txHash }` (`hold` is a `HoldRow`, with `fund`; `txHash` is the approve/reject tx). An approve the fund can no longer cover is `422 { "error": "contract rejected: insufficient fund balance: ..." }` and the hold stays `held`. An approve whose `ft_transfer` is rolled back is `422` and is not recorded as paid.
 
 ### Treasurer export and summary
 
@@ -281,14 +283,14 @@ Cells starting with `= + - @` are prefixed with `'`.
 3. The contract checks caller, fund name, allowlist, unique `bill_id`, per-bill limit, monthly cap, and that the bill fits the fund's uncommitted `available` (received − paid − held).
 4. If the vendor is allowlisted, amount is at or under the per-bill limit, the cap has room, and the fund covers it: USDC transfers to the vendor; the fund's `paid` grows; status `paid`. Demo must include one such bill.
 5. If the vendor is allowlisted, amount is above the per-bill limit, the cap has room, and the fund covers it: no transfer; a hold is created and its amount is reserved (`held`). The treasurer later calls `approve_hold` (which re-checks cap, allowlist, and fund, then converts held to paid) or `reject_hold` (which releases the reservation) with the church owner key. Demo must include one such unusual bill, left held until approved.
-6. Any other case is rejected on-chain. The agent cannot pay an unknown vendor, exceed the cap, skip the hold path, or pay a bill from another fund's money.
+6. Any other case is rejected on-chain. The agent cannot pay an unknown vendor, exceed the cap, skip the hold path, or pay a bill beyond its own fund's ledger balance.
 
 ## Breaking change: per-fund ledger (contract state and ABI)
 
 The per-fund ledger changes the treasury's Borsh state (`Payout` and `Hold` gained `fund`; new `fund_ledger` (`received`, `paid`, `held`) and `credited_gifts` collections) and its ABI (`request_payout` requires `fund`; new `credit_fund`, `get_fund`, `get_fund_ledger`). There is no migration method. The existing testnet treasury `treasury.openlid-demo-mwbp9t7m.testnet` **cannot be upgraded in place**: new code would fail to deserialize its old state, and its fund ledgers would be empty anyway. Use a **fresh demo account and redeploy**. `scripts/testnet/setup.mjs` only deploys when its `state.json` says it has not, so point it at a new keys directory (a new faucet root account and fresh contracts, nothing reused):
 
 ```bash
-# Documentation only. Not run as part of this change. Testnet, $0.
+# Testnet, $0. The per-fund build was deployed with setup.mjs on a fresh root; see contracts/treasury/TESTNET-PROOF.md.
 (cd contracts/treasury && cargo build --target wasm32-unknown-unknown --release)
 (cd contracts/test-ft && cargo build --target wasm32-unknown-unknown --release)
 OPENLID_DEMO_KEYS_DIR=.demo-keys/fund-ledger scripts/demo.sh --once   # new root account; keys stay under gitignored .demo-keys/

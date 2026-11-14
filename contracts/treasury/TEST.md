@@ -44,6 +44,10 @@ the limit / cap / allowlist tests are not blocked by fund balance;
 Not used. No sandbox (near-workspaces) integration test was written or run, so
 end-to-end behaviour against a real NEP-141 token contract is untested here.
 
+One manual testnet run against the `tUSDC` test FT is recorded in
+[`TESTNET-PROOF.md`](TESTNET-PROOF.md): a `building` bill refused with
+`insufficient fund balance`, and a `missions` bill paid by `ft_transfer`.
+
 ## Testnet token
 
 Unit tests use the placeholder token id `usdc.near`. The testnet demo uses the

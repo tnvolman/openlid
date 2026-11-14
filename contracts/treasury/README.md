@@ -44,7 +44,10 @@ cargo build --target wasm32-unknown-unknown --release
 For a deployable artifact, prefer `cargo near build` (cargo-near), which pins a
 NEAR-compatible wasm feature set and runs `wasm-opt`. Recent rustc versions emit
 wasm features that some nearcore versions reject; the plain cargo build above is
-only verified to compile. Nothing here has been deployed.
+only verified to compile. The `cargo near build non-reproducible-wasm` output is
+deployed on NEAR testnet at `treasury.openlid-demo-mwfrrslq.testnet`; see
+[`TESTNET-PROOF.md`](TESTNET-PROOF.md) for the wasm sha256, the deploy, and an
+`insufficient fund balance` refusal on-chain.
 
 ## Layout
 
@@ -88,8 +91,9 @@ only verified to compile. Nothing here has been deployed.
   cannot pay a missions or building bill.
 - Breaking change: `Payout`/`Hold` gained `fund` and the state gained two
   collections, with no migration. A deployment of the previous version (e.g.
-  `treasury.openlid-demo-mwbp9t7m.testnet`) needs a fresh account and
-  redeploy; see INTERFACES.md.
+  `treasury.openlid-demo-mwbp9t7m.testnet`, which still runs the earlier
+  build without per-fund balances) needs a fresh account and redeploy; see
+  INTERFACES.md and [`TESTNET-PROOF.md`](TESTNET-PROOF.md).
 - Timestamps (`execute_after`) are `U64` strings in JSON; amounts are `U128`
   strings. Events use `EVENT_JSON:` with `standard: "openlid"`,
   `version: "1.0.0"`, and `data` as a one-element array.

@@ -65,7 +65,7 @@ The agent key is never used for `approve_hold` / `reject_hold`. Those are treasu
 
 The comparison hashes both values with SHA-256 and compares the digests with `crypto.timingSafeEqual`, so it is constant-time for any header length. Neither the secret nor the supplied header appears in any response or log.
 
-No other route reads or needs the header. The agent is never given the secret: it uses `POST /api/payouts/request`, which works without it.
+No other route reads or needs the header. The agent's endpoint, `POST /api/payouts/request`, works without the secret, and the agent is not handed it. Any program on the same machine that can read the page bundle (Vite inlines `VITE_OPENLID_APPROVAL_SECRET`), `.demo-keys/approval.env`, or this API's environment can read it, so it is a demo control, not a boundary.
 
 This is a shared secret for a local demo, not wallet signing. The treasurer page sends it from `VITE_OPENLID_APPROVAL_SECRET`, so anything that can read the page's build or env can read it. Keep the API bound to `127.0.0.1`. In real use, approve and reject are signed by the treasurer's hardware wallet or multisig, not by this server.
 

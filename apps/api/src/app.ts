@@ -440,7 +440,8 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   async function resolveHold(c: Context, action: 'approve' | 'reject') {
-    // Treasurer-only: checked before any contract call. The agent is never given this secret.
+    // Treasurer-only: checked before any contract call. The agent's endpoint does not take this secret, but any
+    // local process that can read the page bundle, .demo-keys/approval.env, or this env can: a demo control.
     requireApproval(c, approvalSecret);
     const billId = c.req.param('billId');
     if (!billId) throw new HttpError(400, 'billId is required');

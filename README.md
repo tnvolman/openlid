@@ -17,29 +17,29 @@ The author also entered Onhire, an independent project, in this hackathon: https
   - With `ONECLICK_API_KEY` unset, the API uses a local stub that returns responses shaped like dry-run quotes, so it never calls the paid live endpoint.
   - No deposit is ever sent.
 - **Settlement (this demo).** The cross-chain transfer is simulated. `POST /api/gifts/:id/simulate-settlement` mints a test token (`tUSDC`, a minimal NEP-141 with 6 decimals) into the church's treasury contract on NEAR testnet, then the owner records it in the gift's fund on-chain (`credit_fund`), then marks the gift `settled`. If the fund credit fails, the gift is not marked settled. In the full design, the 1Click swap would deliver real USDC instead.
-- **Payouts.** Rules live in the contract, not the agent. The contract enforces:
+- **Payouts.** Rules live in the contract, not the agent. In this demo the treasury account also keeps a full-access key that could bypass the contract (see [Known issues](#known-issues)). The contract enforces:
   - a vendor allowlist
   - a per-bill limit
   - a monthly cap
   - a 24-hour timelock on allowlist changes
-  - per-fund balances: every bill names a fund (`general`, `missions`, or `building`) and is paid only if that fund's uncommitted `available = received - paid - held` covers it. Outstanding holds reserve their amount, so two holds cannot commit the same money. A missions gift cannot pay a building bill.
+  - per-fund balances: every bill names a fund (`general`, `missions`, or `building`) and is paid only if that fund's uncommitted `available = received - paid - held` covers it. Outstanding holds reserve their amount, so two holds cannot commit the same money. A building bill can spend only what the building ledger shows as available. Ledger credits are owner-entered and not checked against tokens received (see [Known issues](#known-issues)), so the cash-vs-ledger line is what catches a wrong credit.
+  - The per-fund ledger is unit-tested (`cargo test`) and deployed on NEAR testnet at `treasury.openlid-demo-mwfrrslq.testnet`. There, the contract refused a 50 tUSDC `building` bill while the building ledger had 0 available, and paid a `missions` bill. See [contracts/treasury/TESTNET-PROOF.md](contracts/treasury/TESTNET-PROOF.md) for the transaction links. The older testnet treasury `treasury.openlid-demo-mwbp9t7m.testnet` runs the earlier build, without per-fund balances.
 - **Fund labels.** In current US GAAP wording, `missions` and `building` are **with donor restrictions** and `general` is **without donor restrictions**. That is a label, not a permission: all three funds are siloed, and `general` cannot pay a missions or building bill. Doing that on purpose would be an interfund transfer, which is not built (see [Does not cover](#does-not-cover-yet)). There are no board-designated set-asides, and nothing is called "restricted" that the donor did not restrict.
-- **Agent.** The agent has only a restricted function-call access key, and that key can call only `request_payout`. On-chain it cannot pay an unknown vendor, go over the cap, skip a hold, or spend one fund's gifts on another fund's bill: approving a hold is an owner-only contract method the agent's key cannot call. In the local API, approving or rejecting a hold also needs the treasurer's approval secret (`X-OpenLid-Approval`), which the agent is never given; the agent's own endpoint, `POST /api/payouts/request`, does not take it. The API is meant to run on `127.0.0.1` only. The secret is a shared value in a local demo, not wallet signing (see [Known issues](#known-issues)).
+- **Agent.** The agent has only a restricted function-call access key, and that key can call only `request_payout`. On-chain it cannot pay an unknown vendor, go over the cap, skip a hold, or pay a bill beyond its own fund's ledger balance. Approving a hold is an owner-only contract method the agent's key cannot call. In the local API, approving or rejecting a hold also needs the treasurer's approval secret (`X-OpenLid-Approval`). The agent's endpoint, `POST /api/payouts/request`, does not take the secret, and the agent is not handed it. But any program on the same machine can read it if it can read the page bundle (Vite inlines `VITE_OPENLID_APPROVAL_SECRET`), `.demo-keys/approval.env`, or the API's environment. So it is a demo control, not a boundary. The demo has no separate agent process: `scripts/demo.sh` sends both the bills and the treasurer's approval. The API is meant to run on `127.0.0.1` only (see [Known issues](#known-issues)).
 - **Holds.** A bill to an allowlisted vendor that is over the per-bill limit is held for the church treasurer. In real use the treasurer is a hardware wallet or a multisig. The treasurer approves or rejects the bill. The hold only looks at one bill at a time; see [Known issues](#known-issues) for split bills.
 
 ## Repository layout
 
 | Path | What |
 | --- | --- |
-| `contracts/treasury` | Rust `near-sdk` treasury contract (allowlist, limits, holds, timelock) |
+| `contracts/treasury` | Rust `near-sdk` treasury contract (allowlist, limits, holds, timelock, per-fund ledger); testnet proof in `TESTNET-PROOF.md` |
 | `contracts/test-ft` | Minimal NEP-141 `tUSDC` test token, testnet and unit tests only |
 | `apps/api` | HTTP API on `127.0.0.1:8787`: dry-run 1Click quotes, simulated settlement, payout requests, holds, summary, CSV export |
 | `apps/web` | Treasurer page (Vite + vanilla TypeScript) on `127.0.0.1:5173` |
 | `scripts/demo.sh` | Testnet demo runner |
 | `scripts/testnet/setup.mjs` | Creates testnet accounts through the faucet, generates keys into `.demo-keys/`, and deploys the contracts |
+| `scripts/testnet/prove-fund-refusal.mjs` | Testnet proof after setup: credits `missions`, shows a `building` bill refused for insufficient fund balance, pays a `missions` bill |
 | `INTERFACES.md` | The contract, API, and UI contract all parts build against |
-
-The contract, API, and UI are built in separate worktrees and merged at integration. See [Known issues](#known-issues).
 
 ## Setup
 
@@ -193,18 +193,19 @@ The web tests use the in-memory fixture. They check:
 - **Wasm filenames.** After `cargo build --target wasm32-unknown-unknown --release`, setup looks for `contracts/treasury/target/wasm32-unknown-unknown/release/openlid_treasury.wasm` and `contracts/test-ft/target/wasm32-unknown-unknown/release/openlid_test_ft.wasm` (and the `target/near/` equivalents). Build those before `scripts/demo.sh`.
 - **24-hour allowlist timelock.** Later allowlist add or remove still waits 24 hours. A fresh deploy may pass an `initial_allowlist` to `new`; those vendors are active immediately, as deploy-time configuration rather than a later change. The demo uses that so the first run can pay and hold bills on the same day.
 - **Test-FT init.** The test FT is initialized with `new({ owner })`, matching `contracts/test-ft`. Override with `DEMO_FT_INIT_METHOD` and `DEMO_FT_INIT_ARGS` only if you swap the token. If the token has no `storage_deposit`, that step is skipped with a note.
-- **Per-fund ledger is a breaking contract change.** The treasury's stored state and its `request_payout` arguments changed, and there is no migration. The existing testnet treasury `treasury.openlid-demo-mwbp9t7m.testnet` cannot be upgraded in place; run the demo against a fresh account (for example `OPENLID_DEMO_KEYS_DIR=.demo-keys/fund-ledger scripts/demo.sh --once` after rebuilding both wasm files). See INTERFACES.md, "Breaking change: per-fund ledger". Not redeployed as part of this change.
+- **Per-fund ledger is a breaking contract change.** The treasury's stored state and its `request_payout` arguments changed, and there is no migration. The existing testnet treasury `treasury.openlid-demo-mwbp9t7m.testnet` cannot be upgraded in place; run the demo against a fresh account (for example `OPENLID_DEMO_KEYS_DIR=.demo-keys/fund-ledger scripts/demo.sh --once` after rebuilding both wasm files). See INTERFACES.md, "Breaking change: per-fund ledger". `treasury.openlid-demo-mwbp9t7m.testnet` still runs the earlier build, without per-fund balances. The per-fund build is deployed on a fresh account, `treasury.openlid-demo-mwfrrslq.testnet`; see [contracts/treasury/TESTNET-PROOF.md](contracts/treasury/TESTNET-PROOF.md).
 - **Noncash gifts, not tax values.** Stablecoin gifts are noncash property. Amounts on the page and in the CSV are book value at receipt for the church's books, never a deductible value. OpenLid does not issue noncash acknowledgments, state fair market value, or handle Forms 8283/8282 or appraisals. A CPA must confirm current rules.
 - **No custody; legal review before real money.** OpenLid never holds or moves donor funds for someone else; gifts settle to a treasury contract the church controls. The intended 1Click path receives each gift at a per-gift deposit address before settling to the church treasury, and that path needs a legal review before mainnet or any real funds. The demo is testnet only and never sends a deposit.
 - **Cash vs fund ledgers.** If the treasury's live token balance differs from the sum of fund ledgers (for example, tokens left over from an earlier demo run on the same account, or a mint whose `credit_fund` failed), the page shows a red **Mismatch** line with the difference. Use a fresh demo account to start matched.
 - **Both settlement paths credit the fund.** `simulate-settlement` and a real 1Click `SUCCESS` seen by `/api/gifts/:id/sync` share one path: mint tUSDC (testnet only, once per gift), then `credit_fund`. The gift is `settled` only if both succeed. A re-sync of a settled gift does nothing, and a retry after a failed credit credits only.
 - **`credit_fund` does not check the amount.** The owner-supplied amount is not verified against the tokens minted or received. Only the always-visible cash-vs-ledger line on the summary would catch a wrong amount.
 - **The faucet may limit requests.** The testnet faucet can rate-limit or change its endpoint. Override the endpoint with `NEAR_TESTNET_FAUCET`. The created account is reused through `.demo-keys/state.json`.
-- **Assumed API test script.** The `npm test` command for the API assumes the API package defines a `test` script.
-- **NEAR sandbox.** `near-workspaces` sandbox tests may not be in this tree. Contract coverage is `near-sdk` unit tests.
+- **NEAR sandbox.** There are no `near-workspaces` sandbox tests. Contract coverage is `near-sdk` unit tests, plus the testnet proof in [contracts/treasury/TESTNET-PROOF.md](contracts/treasury/TESTNET-PROOF.md). Nothing has been tested end to end in a sandbox.
 - **CORS.** The page calls the API cross-origin, from `:5173` to `:8787`. If the API does not send CORS headers, use `?api=same-origin`, which goes through the Vite proxy.
 - **CSV download.** The download goes to the API's URL. Whether the browser saves the file or shows it depends on the API's `Content-Disposition` header.
 - **The treasurer approval secret is a demo control, not real authentication.** Approve and reject require an `X-OpenLid-Approval` header that matches `OPENLID_APPROVAL_SECRET`. If that variable is unset, they return `503`; a missing or wrong header gets `401`. The treasurer page sends the header from `VITE_OPENLID_APPROVAL_SECRET`, so the value lives in the page's local build, and anything that can read that build or its env can read it. In the demo the API also holds the owner key path. In real use, approve and reject are signed by the treasurer's hardware wallet or multisig, not by the server.
+- **Only approve and reject check the approval secret.** The gift quote, `simulate-settlement`, `sync`, and `POST /api/payouts/request` routes are unauthenticated. Settlement makes the API sign the test-FT `mint` and `credit_fund` as the owner. So any local client can add test money to any fund in the demo, and then request payouts against it.
+- **The treasury account keeps a full-access key in this demo.** `scripts/testnet/setup.mjs` creates the treasury account with a full-access key and keeps it in `.demo-keys/`. Whoever holds that key can sign as the treasury: call `ft_transfer` on the token directly, or deploy new code. That bypasses the contract's allowlist, limits, holds, and fund ledgers entirely. A real deployment must delete that key (lock the account) after deploying.
 
 ### Policy and key gaps
 
@@ -239,7 +240,7 @@ This comparison uses only POTLOCK's public docs at <https://docs.potlock.io>.
 
 - Gifts are designated to the church's own funds (`general`, `missions`, `building`).
 - Gifts settle to an account the church owns. In this demo, that settlement is a simulated tUSDC mint on testnet.
-- Money goes out only as vendor payouts, each from the fund its bill is tagged to. The contract enforces the vendor allowlist (with a 24-hour timelock on changes), a per-bill limit, a monthly cap, and per-fund balances. Unusual bills are held for the treasurer.
+- The treasury contract's methods move money only as vendor payouts, each from the fund its bill is tagged to. In this demo the treasury account still has a full-access key in `.demo-keys/`, which could bypass the contract entirely; a real deployment must delete that key (see [Known issues](#known-issues)). The contract enforces the vendor allowlist (with a 24-hour timelock on changes), a per-bill limit, a monthly cap, and per-fund balances. Unusual bills are held for the treasurer.
 - There is no matching pool and no quadratic funding.
 
 ## License
